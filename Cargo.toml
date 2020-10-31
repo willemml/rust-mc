@@ -1,0 +1,12 @@
+[package]
+name = "rust-mc"
+version = "0.1.0"
+authors = ["willemml"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "0.2", features = ["rt-threaded", "io-driver", "io-util", "tcp", "time", "macros", "sync", "dns"] }
+mcproto-rs = { git = "https://github.com/Twister915/mcproto-rs", branch = "master", features = ["v1_16_3"] }
+mctokio = { git = "https://github.com/Twister915/mctokio", branch = "master" }
