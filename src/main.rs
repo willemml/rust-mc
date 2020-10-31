@@ -1,6 +1,6 @@
 fn main() {
     let handshake_spec = mcproto_rs::v1_16_3::HandshakeSpec {
-        version: mcproto_rs::types::VarInt::from(735),
+        version: mcproto_rs::types::VarInt::from(753),
         server_address: "127.0.0.1".to_owned(),
         server_port: 25565,
         next_state: mcproto_rs::v1_16_3::HandshakeNextState::Status
