@@ -11,3 +11,4 @@ tokio = { version = "0.2", features = ["rt-threaded", "io-driver", "io-util", "t
 mcproto-rs = { git = "https://github.com/Twister915/mcproto-rs", branch = "master", features = ["v1_16_3"] }
 mctokio = { git = "https://github.com/Twister915/mctokio", branch = "master" }
 anyhow = "1.0.34"
+futures = "0.3"

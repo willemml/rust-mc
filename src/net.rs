@@ -1,5 +1,6 @@
-pub use mcproto_rs::{protocol::State, v1_16_3 as proto};
-use mctokio::{Bridge, TcpReadBridge, TcpWriteBridge};
+use mcproto_rs::protocol::State;
+use mctokio::{Bridge, TcpReadBridge, TcpWriteBridge, TcpConnection};
+use crate::proto;
 pub use proto::{Packet753 as Packet, RawPacket753 as RawPacket};
 
 pub struct ServerConnection {
@@ -8,11 +9,15 @@ pub struct ServerConnection {
 }
 
 impl ServerConnection {
-    pub fn new(reader: TcpReadBridge, writer: TcpWriteBridge) -> Self {
+    pub fn new(reader: TcpReadBridge, writer: TcpWriteBridge) -> Self{
         return Self {
             reader,
             writer,
         };
+    }
+
+    pub fn from_tcp_connection(connection: TcpConnection) -> Self {
+        Self::new(connection.reader, connection.writer)
     }
 
     pub async fn handshake(
@@ -52,22 +57,15 @@ impl ServerConnection {
         self.writer.set_state(state);
     }
 
-    pub async fn write_raw_packet(
-        &mut self,
-        raw_packet: RawPacket<'_>,
-    ) -> Result<(), anyhow::Error> {
-        self.writer.write_raw_packet(raw_packet).await
-    }
-
     pub async fn must_read_next_packet(&mut self) -> Packet {
         if let Ok(packet) = self.read_next_packet().await {
             if let Some(packet) = packet {
                 return packet;
             } else {
-                panic!("Empty Packet.");
+                panic!("Got empty packet on must_read_next_packet.");
             };
         } else {
-            panic!("Exepected a Packet, got EOF.");
+            panic!("Got EOF instead of packet on must_read_next_packet.");
         };
     }
 
