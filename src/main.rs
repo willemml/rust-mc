@@ -1,3 +1,5 @@
+#![feature(array_chunks)]
+
 pub mod handler;
 pub mod net;
 pub mod scanner;

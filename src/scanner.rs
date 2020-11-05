@@ -1,6 +1,5 @@
 use crate::handler::PacketHandler;
 use crate::net::ServerConnection;
-use crate::net::Packet;
 use std::time::Duration;
 
 pub struct PacketScanner {

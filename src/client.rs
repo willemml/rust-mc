@@ -48,10 +48,27 @@ impl MinecraftClient {
         }
     }
 
-    async fn set_state(&mut self, new_state: State) -> Result<(), anyhow::Error> {
+    fn set_state(&mut self, new_state: State) -> Result<(), anyhow::Error> {
         if let Some(server) = &mut self.server {
             server.set_state(new_state);
             Ok(())
+        } else {
+            Err(anyhow::anyhow!("Not connected."))
+        }
+    }
+
+    fn set_compression_threshold(&mut self, threshold: i32) -> Result<(), anyhow::Error> {
+        if let Some(server) = &mut self.server {
+            server.set_compression_threshold(threshold);
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("Not connected."))
+        }
+    }
+
+    fn enable_encryption(&mut self, key: &[u8], iv: &[u8]) -> Result<(), anyhow::Error> {
+        if let Some(server) = &mut self.server {
+            server.enable_encryption(key, iv)
         } else {
             Err(anyhow::anyhow!("Not connected."))
         }
@@ -62,13 +79,13 @@ impl MinecraftClient {
         if let Ok(packet) = read {
             match packet {
                 Packet::LoginEncryptionRequest(body) => {
-                    Err(anyhow::anyhow!("Can't do encryption yet."))
+                    self.enable_encryption(body.public_key.array_chunks().remainder().clone(), body.verify_token.array_chunks().remainder().clone())
                 }
                 Packet::LoginSetCompression(body) => {
-                    Err(anyhow::anyhow!("Can't do compression yet."))
+                    self.set_compression_threshold(body.threshold.0)
                 }
                 Packet::LoginSuccess(body) => {
-                    self.set_state(State::Play).await
+                    self.set_state(State::Play)
                 }
                 _ => {
                     Err(anyhow::anyhow!("Wrong packet."))
