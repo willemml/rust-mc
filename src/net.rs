@@ -1,6 +1,7 @@
 use mcproto_rs::protocol::State;
 use mctokio::{Bridge, TcpReadBridge, TcpWriteBridge, TcpConnection};
 use std::net::SocketAddr;
+use anyhow::Result;
 use crate::proto;
 pub use proto::{Packet753 as Packet, RawPacket753 as RawPacket};
 
@@ -69,7 +70,7 @@ impl ServerConnection {
         };
     }
 
-    pub async fn write_packet(&mut self, packet: Packet) -> anyhow::Result<()> {
+    pub async fn write_packet(&mut self, packet: Packet) -> Result<()> {
         self.writer.write_packet(packet).await
     }
 
@@ -78,7 +79,7 @@ impl ServerConnection {
         self.writer.set_state(state);
     }
 
-    pub fn enable_encryption(&mut self, key: &[u8], iv: &[u8]) -> anyhow::Result<()> {
+    pub fn enable_encryption(&mut self, key: &[u8], iv: &[u8]) -> Result<()> {
         let reader = self.reader.enable_encryption(key, iv);
         if let Err(error) = reader {
             Err(error)
@@ -92,7 +93,7 @@ impl ServerConnection {
         self.writer.set_compression_threshold(Some(threshold));
     }
 
-    pub async fn read_next_packet(&mut self) -> anyhow::Result<Option<Packet>> {
+    pub async fn read_next_packet(&mut self) -> Result<Option<Packet>> {
         if let Some(raw) = self.reader.read_packet::<RawPacket>().await? {
             Ok(Some(mcproto_rs::protocol::RawPacket::deserialize(&raw)?))
         } else {

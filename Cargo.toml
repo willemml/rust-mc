@@ -12,3 +12,5 @@ mcproto-rs = { git = "https://github.com/Twister915/mcproto-rs", branch = "maste
 mctokio = { git = "https://github.com/Twister915/mctokio", branch = "master" }
 anyhow = "1.0.34"
 futures = "0.3"
+rust-crypto = "^0.2"
+openssl = "0.10.30"

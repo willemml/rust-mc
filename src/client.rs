@@ -1,12 +1,17 @@
-use std::net::SocketAddr;
-use crate::net::ServerConnection;
 use crate::net::Packet;
-use mcproto_rs::protocol::State;
+use crate::net::ServerConnection;
+use anyhow::Result;
+use mcproto_rs::{types::CountedArray, protocol::State};
+use std::net::SocketAddr;
+
+const SERVER_NONE_ERROR: &str = "Not connected to server.";
+const WRONG_PACKET_ERROR: &str = "Recieved an unexpected packet.";
 
 pub struct MinecraftClient {
     address: SocketAddr,
     username: String,
-    server: Option<ServerConnection>
+    server: Option<ServerConnection>,
+    connected: bool,
 }
 
 impl MinecraftClient {
@@ -14,24 +19,33 @@ impl MinecraftClient {
         MinecraftClient {
             address,
             username,
-            server: None
+            server: None,
+            connected: false,
         }
     }
 
-    pub async fn connect(&mut self) {
+    pub async fn connect(&mut self) -> Result<()> {
         if let Ok(connection) = ServerConnection::connect_async(self.address).await {
             self.server = Some(connection);
             if let Some(server) = &mut self.server {
-                if let Ok(_) = server.handshake(crate::proto::HandshakeNextState::Login, &self.username).await {
-                    self.login();
+                if let Ok(_) = server
+                    .handshake(crate::proto::HandshakeNextState::Login, &self.username)
+                    .await
+                {
+                    self.login().await
+                } else {
+                    Err(anyhow::anyhow!("Handshaking with server failed."))
                 }
+            } else {
+                Err(anyhow::anyhow!("Disconnected."))
             }
         } else {
             self.server = None;
+            Err(anyhow::anyhow!("Failed to connect to server socket."))
         }
     }
 
-    async fn read_packet(&mut self) -> Result<Packet, anyhow::Error> {
+    async fn read_packet(&mut self) -> Result<Packet> {
         if let Some(server) = &mut self.server {
             let read = server.read_next_packet().await;
             if let Ok(possible_packet) = read {
@@ -44,52 +58,109 @@ impl MinecraftClient {
                 Err(read.err().unwrap())
             }
         } else {
-            Err(anyhow::anyhow!("Not connected."))
+            Err(anyhow::anyhow!(SERVER_NONE_ERROR))
         }
     }
 
-    fn set_state(&mut self, new_state: State) -> Result<(), anyhow::Error> {
+    async fn send_packet(&mut self, packet: Packet) -> Result<()> {
+        if let Some(server) = &mut self.server {
+            server.write_packet(packet).await
+        } else {
+            Err(anyhow::anyhow!(SERVER_NONE_ERROR))
+        }
+    }
+
+    fn set_state(&mut self, new_state: State) -> Result<()> {
         if let Some(server) = &mut self.server {
             server.set_state(new_state);
             Ok(())
         } else {
-            Err(anyhow::anyhow!("Not connected."))
+            Err(anyhow::anyhow!(SERVER_NONE_ERROR))
         }
     }
 
-    fn set_compression_threshold(&mut self, threshold: i32) -> Result<(), anyhow::Error> {
+    async fn set_compression_threshold(&mut self, threshold: i32) -> Result<()> {
         if let Some(server) = &mut self.server {
             server.set_compression_threshold(threshold);
-            Ok(())
+            let read = self.read_packet().await;
+            if let Ok(packet) = read {
+                match packet {
+                    Packet::LoginSuccess(_) => {
+                        self.connected = true;
+                        self.set_state(State::Play)
+                    }
+                    _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
+                }
+            } else {
+                Err(read.err().unwrap())
+            }
         } else {
-            Err(anyhow::anyhow!("Not connected."))
+            Err(anyhow::anyhow!(SERVER_NONE_ERROR))
         }
     }
 
-    fn enable_encryption(&mut self, key: &[u8], iv: &[u8]) -> Result<(), anyhow::Error> {
+    async fn enable_encryption(
+        &mut self,
+        spec: crate::proto::LoginEncryptionRequestSpec,
+    ) -> Result<()> {
+        let key = spec.public_key.array_chunks::<0>().remainder();
+        let token = spec.verify_token.array_chunks::<0>().remainder();
+
         if let Some(server) = &mut self.server {
-            server.enable_encryption(key, iv)
+            let encrypt = server.enable_encryption(key, token);
+            if let Ok(_) = encrypt {
+                let buf: &mut [u8] = &mut [0; 128];
+                if let Ok(_) = openssl::rand::rand_bytes(buf) {
+                    let spec = crate::proto::LoginEncryptionResponseSpec {
+                        shared_secret: CountedArray::from(buf.to_vec()),
+                        verify_token: spec.verify_token,
+                    };
+                    let respond = self
+                        .send_packet(Packet::LoginEncryptionResponse(spec))
+                        .await;
+                    if let Ok(_) = respond {
+                        let read = self.read_packet().await;
+                        if let Ok(packet) = read {
+                            match packet {
+                                Packet::LoginSetCompression(body) => {
+                                    self.set_compression_threshold(body.threshold.0).await
+                                }
+                                Packet::LoginSuccess(_) => {
+                                    self.connected = true;
+                                    self.set_state(State::Play)
+                                }
+                                _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
+                            }
+                        } else {
+                            Err(read.err().unwrap())
+                        }
+                    } else {
+                        respond
+                    }
+                } else {
+                    Err(anyhow::anyhow!("Failed to generate shared key."))
+                }
+            } else {
+                encrypt
+            }
         } else {
-            Err(anyhow::anyhow!("Not connected."))
+            Err(anyhow::anyhow!(SERVER_NONE_ERROR))
         }
     }
 
-    pub async fn login(&mut self) -> Result<(), anyhow::Error> {
+    pub async fn login(&mut self) -> Result<()> {
         let read = self.read_packet().await;
         if let Ok(packet) = read {
             match packet {
-                Packet::LoginEncryptionRequest(body) => {
-                    self.enable_encryption(body.public_key.array_chunks().remainder().clone(), body.verify_token.array_chunks().remainder().clone())
-                }
+                Packet::LoginEncryptionRequest(body) => self.enable_encryption(body).await,
                 Packet::LoginSetCompression(body) => {
-                    self.set_compression_threshold(body.threshold.0)
+                    self.set_compression_threshold(body.threshold.0).await
                 }
-                Packet::LoginSuccess(body) => {
+                Packet::LoginSuccess(_) => {
+                    self.connected = true;
                     self.set_state(State::Play)
                 }
-                _ => {
-                    Err(anyhow::anyhow!("Wrong packet."))
-                }
+                _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
             }
         } else {
             Err(read.err().unwrap())

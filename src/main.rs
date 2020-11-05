@@ -24,13 +24,12 @@ fn main() {
 }
 
 async fn async_main() {
-    let connecting = ServerConnection::connect_async(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565)).await;
-    if let Ok(mut connection) = connecting {
-        if let Ok(_) = connection.handshake(crate::proto::HandshakeNextState::Status, &"".to_string()).await {
-            let mut handler = TestHandler { };
-            let mut scanner = PacketScanner::new(connection);
-            scanner.start(&mut handler).await;
-        }
+    let mut client = client::MinecraftClient::new(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565), "test".to_string());
+    let connect = client.connect().await;
+    if let Ok(_) = connect {
+        println!("Connected successfully!")
+    } else {
+        println!("Connection failed, {}", connect.err().unwrap())
     }
 }
 
