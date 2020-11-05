@@ -17,8 +17,7 @@ impl ServerConnection {
         };
     }
 
-    pub async fn connect_async(ip: IpAddr, port: u16) -> Result<Self, std::io::Error> {
-        let address = SocketAddr::new(ip, port);
+    pub async fn connect_async(address: SocketAddr) -> Result<Self, std::io::Error> {
         let connection = TcpConnection::connect_to_server(address).await;
         if let Ok(connected) = connection {
             Ok(ServerConnection::from_tcp_connection(connected))
@@ -27,8 +26,8 @@ impl ServerConnection {
         }
     }
 
-    pub fn connect(ip: IpAddr, port: u16) -> Result<Self, std::io::Error> {
-        tokio::runtime::Runtime::new().unwrap().block_on(Self::connect_async(ip, port))
+    pub fn connect(address: SocketAddr) -> Result<Self, std::io::Error> {
+        tokio::runtime::Runtime::new().unwrap().block_on(Self::connect_async(address))
     }
 
     pub fn from_tcp_connection(connection: TcpConnection) -> Self {
@@ -38,6 +37,7 @@ impl ServerConnection {
     pub async fn handshake(
         &mut self,
         next_state: proto::HandshakeNextState,
+        name: &String
     ) -> Result<(), anyhow::Error> {
         let handshake = proto::HandshakeSpec {
             version: mcproto_rs::types::VarInt::from(753),
@@ -58,6 +58,12 @@ impl ServerConnection {
                 }
             } else {
                 self.set_state(State::Login);
+                if let Err(error) = self
+                    .write_packet(Packet::LoginStart(proto::LoginStartSpec { name: name.clone() }))
+                    .await
+                {
+                    return Err(error);
+                }
             };
             return Ok(());
         };

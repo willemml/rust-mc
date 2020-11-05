@@ -2,12 +2,13 @@ pub mod handler;
 pub mod net;
 pub mod scanner;
 pub mod status;
+pub mod client;
 
 pub use mcproto_rs::v1_16_3 as proto;
 
 use crate::scanner::PacketScanner;
 use crate::net::{ServerConnection, Packet};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use crate::handler::PacketHandler;
 
 fn main() {
@@ -21,9 +22,9 @@ fn main() {
 }
 
 async fn async_main() {
-    let connecting = ServerConnection::connect_async(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565).await;
+    let connecting = ServerConnection::connect_async(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565)).await;
     if let Ok(mut connection) = connecting {
-        if let Ok(_) = connection.handshake(crate::proto::HandshakeNextState::Status).await {
+        if let Ok(_) = connection.handshake(crate::proto::HandshakeNextState::Status, &"".to_string()).await {
             let mut handler = TestHandler { };
             let mut scanner = PacketScanner::new(connection);
             scanner.start(&mut handler).await;

@@ -32,7 +32,7 @@ impl StatusChecker {
         let connection = TcpConnection::connect_to_server(address).await;
         if let Ok(connected) = connection {
             let mut server = ServerConnection::from_tcp_connection(connected);
-            let handshake = server.handshake(HandshakeNextState::Status).await;
+            let handshake = server.handshake(HandshakeNextState::Status, &"".to_string()).await;
             if let Ok(_) = &handshake {
                 let packet = server.read_next_packet().await;
                 if let Ok(packet) = packet {
