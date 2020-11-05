@@ -5,9 +5,10 @@ pub mod status;
 
 pub use mcproto_rs::v1_16_3 as proto;
 
-use crate::scanner::{PacketScanner, TestHandler};
-use crate::net::ServerConnection;
+use crate::scanner::PacketScanner;
+use crate::net::{ServerConnection, Packet};
 use std::net::{IpAddr, Ipv4Addr};
+use crate::handler::PacketHandler;
 
 fn main() {
     let status_checker = status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
@@ -22,9 +23,20 @@ fn main() {
 async fn async_main() {
     let connecting = ServerConnection::connect_async(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565).await;
     if let Ok(mut connection) = connecting {
-        connection.handshake(crate::proto::HandshakeNextState::Status).await;
-        let mut scanner = PacketScanner::new(connection, TestHandler {});
-        scanner.start().await;
+        if let Ok(_) = connection.handshake(crate::proto::HandshakeNextState::Status).await {
+            let mut handler = TestHandler { };
+            let mut scanner = PacketScanner::new(connection);
+            scanner.start(&mut handler).await;
+        }
+    }
+}
+
+pub struct TestHandler;
+
+impl PacketHandler for TestHandler {
+    fn handle_packet(&mut self, _packet: Packet, scanner: &mut PacketScanner) {
+        println!("Received a packet!");
+        scanner.stop();
     }
 }
 
