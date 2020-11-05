@@ -1,5 +1,6 @@
 use mcproto_rs::protocol::State;
 use mctokio::{Bridge, TcpReadBridge, TcpWriteBridge, TcpConnection};
+use std::net::{IpAddr, SocketAddr};
 use crate::proto;
 pub use proto::{Packet753 as Packet, RawPacket753 as RawPacket};
 
@@ -14,6 +15,20 @@ impl ServerConnection {
             reader,
             writer,
         };
+    }
+
+    pub async fn connect_async(ip: IpAddr, port: u16) -> Result<Self, std::io::Error> {
+        let address = SocketAddr::new(ip, port);
+        let connection = TcpConnection::connect_to_server(address).await;
+        if let Ok(connected) = connection {
+            Ok(ServerConnection::from_tcp_connection(connected))
+        } else {
+            Err(connection.err().unwrap())
+        }
+    }
+
+    pub fn connect(ip: IpAddr, port: u16) -> Result<Self, std::io::Error> {
+        tokio::runtime::Runtime::new().unwrap().block_on(Self::connect_async(ip, port))
     }
 
     pub fn from_tcp_connection(connection: TcpConnection) -> Self {
@@ -55,18 +70,6 @@ impl ServerConnection {
     pub fn set_state(&mut self, state: State) {
         self.reader.set_state(state.clone());
         self.writer.set_state(state);
-    }
-
-    pub async fn must_read_next_packet(&mut self) -> Packet {
-        if let Ok(packet) = self.read_next_packet().await {
-            if let Some(packet) = packet {
-                return packet;
-            } else {
-                panic!("Got empty packet on must_read_next_packet.");
-            };
-        } else {
-            panic!("Got EOF instead of packet on must_read_next_packet.");
-        };
     }
 
     pub async fn read_next_packet(&mut self) -> Result<Option<Packet>, anyhow::Error> {
