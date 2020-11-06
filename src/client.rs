@@ -1,7 +1,7 @@
 use crate::net::Packet;
 use crate::net::ServerConnection;
 use anyhow::Result;
-use mcproto_rs::{types::CountedArray, protocol::State};
+use mcproto_rs::{protocol::State, types::CountedArray};
 use std::net::SocketAddr;
 
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
@@ -9,39 +9,47 @@ const WRONG_PACKET_ERROR: &str = "Recieved an unexpected packet.";
 
 pub struct MinecraftClient {
     address: SocketAddr,
-    username: String,
+    profile: crate::auth::Profile,
     server: Option<ServerConnection>,
     connected: bool,
 }
 
 impl MinecraftClient {
-    pub fn new(address: SocketAddr, username: String) -> Self {
+    pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> Self {
         MinecraftClient {
             address,
-            username,
+            profile,
             server: None,
             connected: false,
         }
     }
 
     pub async fn connect(&mut self) -> Result<()> {
-        if let Ok(connection) = ServerConnection::connect_async(self.address).await {
-            self.server = Some(connection);
-            if let Some(server) = &mut self.server {
-                if let Ok(_) = server
-                    .handshake(crate::proto::HandshakeNextState::Login, &self.username)
-                    .await
-                {
-                    self.login().await
+        let auth = self.profile.authenticate().await;
+        if let Ok(_) = auth {
+            if let Ok(connection) = ServerConnection::connect_async(self.address).await {
+                self.server = Some(connection);
+                if let Some(server) = &mut self.server {
+                    if let Ok(_) = server
+                        .handshake(
+                            crate::proto::HandshakeNextState::Login,
+                            &self.profile.game_profile.name,
+                        )
+                        .await
+                    {
+                        self.login().await
+                    } else {
+                        Err(anyhow::anyhow!("Handshaking with server failed."))
+                    }
                 } else {
-                    Err(anyhow::anyhow!("Handshaking with server failed."))
+                    Err(anyhow::anyhow!("Disconnected."))
                 }
             } else {
-                Err(anyhow::anyhow!("Disconnected."))
+                self.server = None;
+                Err(anyhow::anyhow!("Failed to connect to server socket."))
             }
         } else {
-            self.server = None;
-            Err(anyhow::anyhow!("Failed to connect to server socket."))
+            auth
         }
     }
 
@@ -80,6 +88,9 @@ impl MinecraftClient {
     }
 
     async fn set_compression_threshold(&mut self, threshold: i32) -> Result<()> {
+        if self.connected {
+            return Err(anyhow::anyhow!("Already connected."));
+        }
         if let Some(server) = &mut self.server {
             server.set_compression_threshold(threshold);
             let read = self.read_packet().await;
@@ -103,45 +114,58 @@ impl MinecraftClient {
         &mut self,
         spec: crate::proto::LoginEncryptionRequestSpec,
     ) -> Result<()> {
-        let key = spec.public_key.array_chunks::<0>().remainder();
-        let token = spec.verify_token.array_chunks::<0>().remainder();
-
+        if self.connected {
+            return Err(anyhow::anyhow!("Already connected."));
+        }
+        if self.profile.offline {
+            return Err(anyhow::anyhow!(
+                "Cannot use encryption with offline account."
+            ));
+        }
+        let hash = crate::hash::calc_hash(&spec.server_id);
+        let key = &spec.public_key.as_slice();
+        let token = &spec.verify_token.as_slice();
         if let Some(server) = &mut self.server {
-            let encrypt = server.enable_encryption(key, token);
-            if let Ok(_) = encrypt {
-                let buf: &mut [u8] = &mut [0; 128];
-                if let Ok(_) = openssl::rand::rand_bytes(buf) {
-                    let spec = crate::proto::LoginEncryptionResponseSpec {
-                        shared_secret: CountedArray::from(buf.to_vec()),
-                        verify_token: spec.verify_token,
-                    };
-                    let respond = self
-                        .send_packet(Packet::LoginEncryptionResponse(spec))
+            let buf: &mut [u8] = &mut [0; 16];
+            if let Ok(_) = openssl::rand::rand_bytes(buf) {
+                let response_spec = crate::proto::LoginEncryptionResponseSpec {
+                    shared_secret: CountedArray::from(buf.to_vec()),
+                    verify_token: spec.verify_token.clone(),
+                };
+                let auth = self.profile.join_server(hash).await;
+                if let Ok(_) = auth {
+                    let respond = server
+                        .write_packet(Packet::LoginEncryptionResponse(response_spec))
                         .await;
                     if let Ok(_) = respond {
-                        let read = self.read_packet().await;
-                        if let Ok(packet) = read {
-                            match packet {
-                                Packet::LoginSetCompression(body) => {
-                                    self.set_compression_threshold(body.threshold.0).await
+                        let enable = server.enable_encryption(key, token);
+                        if let Ok(_) = enable {
+                            let read = self.read_packet().await;
+                            if let Ok(packet) = read {
+                                match packet {
+                                    Packet::LoginSetCompression(body) => {
+                                        self.set_compression_threshold(body.threshold.0).await
+                                    }
+                                    Packet::LoginSuccess(_) => {
+                                        self.connected = true;
+                                        self.set_state(State::Play)
+                                    }
+                                    _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
                                 }
-                                Packet::LoginSuccess(_) => {
-                                    self.connected = true;
-                                    self.set_state(State::Play)
-                                }
-                                _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
+                            } else {
+                                Err(read.err().unwrap())
                             }
                         } else {
-                            Err(read.err().unwrap())
+                            enable
                         }
                     } else {
                         respond
                     }
                 } else {
-                    Err(anyhow::anyhow!("Failed to generate shared key."))
+                    auth
                 }
             } else {
-                encrypt
+                Err(anyhow::anyhow!("Failed to generate shared key."))
             }
         } else {
             Err(anyhow::anyhow!(SERVER_NONE_ERROR))
@@ -149,6 +173,9 @@ impl MinecraftClient {
     }
 
     pub async fn login(&mut self) -> Result<()> {
+        if self.connected {
+            return Err(anyhow::anyhow!("Already connected."));
+        }
         let read = self.read_packet().await;
         if let Ok(packet) = read {
             match packet {
