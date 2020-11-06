@@ -127,45 +127,44 @@ impl MinecraftClient {
         let token = &spec.verify_token.as_slice();
         if let Some(server) = &mut self.server {
             let buf: &mut [u8] = &mut [0; 16];
-            if let Ok(_) = openssl::rand::rand_bytes(buf) {
-                let response_spec = crate::proto::LoginEncryptionResponseSpec {
-                    shared_secret: CountedArray::from(buf.to_vec()),
-                    verify_token: spec.verify_token.clone(),
-                };
-                let auth = self.profile.join_server(hash).await;
-                if let Ok(_) = auth {
-                    let respond = server
-                        .write_packet(Packet::LoginEncryptionResponse(response_spec))
-                        .await;
-                    if let Ok(_) = respond {
-                        let enable = server.enable_encryption(key, token);
-                        if let Ok(_) = enable {
-                            let read = self.read_packet().await;
-                            if let Ok(packet) = read {
-                                match packet {
-                                    Packet::LoginSetCompression(body) => {
-                                        self.set_compression_threshold(body.threshold.0).await
-                                    }
-                                    Packet::LoginSuccess(_) => {
-                                        self.connected = true;
-                                        self.set_state(State::Play)
-                                    }
-                                    _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
+            for mut _i in buf.iter() {
+                _i = &rand::random::<u8>();
+            }
+            let response_spec = crate::proto::LoginEncryptionResponseSpec {
+                shared_secret: CountedArray::from(buf.to_vec()),
+                verify_token: spec.verify_token.clone(),
+            };
+            let auth = self.profile.join_server(hash).await;
+            if let Ok(_) = auth {
+                let respond = server
+                    .write_packet(Packet::LoginEncryptionResponse(response_spec))
+                    .await;
+                if let Ok(_) = respond {
+                    let enable = server.enable_encryption(key, token);
+                    if let Ok(_) = enable {
+                        let read = self.read_packet().await;
+                        if let Ok(packet) = read {
+                            match packet {
+                                Packet::LoginSetCompression(body) => {
+                                    self.set_compression_threshold(body.threshold.0).await
                                 }
-                            } else {
-                                Err(read.err().unwrap())
+                                Packet::LoginSuccess(_) => {
+                                    self.connected = true;
+                                    self.set_state(State::Play)
+                                }
+                                _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
                             }
                         } else {
-                            enable
+                            Err(read.err().unwrap())
                         }
                     } else {
-                        respond
+                        enable
                     }
                 } else {
-                    auth
+                    respond
                 }
             } else {
-                Err(anyhow::anyhow!("Failed to generate shared key."))
+                auth
             }
         } else {
             Err(anyhow::anyhow!(SERVER_NONE_ERROR))

@@ -11,9 +11,6 @@
 
 extern crate crypto; // Tested with 0.2.36
 extern crate rustc_serialize; // Tested with ^0.3
-extern crate regex; // Tested with 1
-
-use regex::Regex;
 
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
@@ -21,8 +18,6 @@ use crypto::sha1::Sha1;
 use std::iter;
 
 use rustc_serialize::hex::ToHex;
-
-const LEADING_ZERO_REGEX: &str = r#"^0+"#;
 
 pub fn calc_hash(name: &str) -> String {
     let mut hasher = Sha1::new();
@@ -32,15 +27,21 @@ pub fn calc_hash(name: &str) -> String {
 
     let negative = (hex[0] & 0x80) == 0x80;
 
-    let regex = Regex::new(LEADING_ZERO_REGEX).unwrap();
-
     if negative {
         two_complement(&mut hex);
-        format!("-{}", regex.replace(hex.as_slice().to_hex().as_str(), "").to_string())
+        format!("-{}", remove_zeros(hex))
     }
     else {
-        regex.replace(hex.as_slice().to_hex().as_str(), "").to_string()
+        remove_zeros(hex)
     }
+}
+
+fn remove_zeros(hex: Vec<u8>) -> String {
+    let mut as_string = hex.as_slice().to_hex();
+    while as_string.starts_with("0") {
+        as_string = as_string.strip_prefix("0").unwrap().to_string();
+    }
+    as_string
 }
 
 fn two_complement(bytes: &mut Vec<u8>) {
