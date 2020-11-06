@@ -11,7 +11,6 @@ tokio = { version = "0.2", features = ["rt-threaded", "io-driver", "io-util", "t
 mcproto-rs = { git = "https://github.com/Twister915/mcproto-rs", branch = "master", features = ["v1_16_3"] }
 mctokio = { git = "https://github.com/Twister915/mctokio", branch = "master" }
 anyhow = "1.0.34"
-futures = "0.3"
 rust-crypto = "^0.2"
 openssl = "0.10.30"
 rustc-serialize = "0.3.24"
@@ -19,4 +18,3 @@ regex = "1.4.2"
 serde_json = "1.0.59"
 reqwest = "0.10.8"
 serde = "1.0.117"
-aes = "0.6.0"
