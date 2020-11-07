@@ -6,8 +6,11 @@ pub mod mojang;
 pub use minecraft::client::Client;
 pub use mojang::auth;
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::{
+    io::Read,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+};
 use tokio::sync::{mpsc, Mutex};
 
 fn main() {
@@ -35,20 +38,21 @@ async fn async_main() {
     let (_tx, rx) = mpsc::channel(20);
     if let Ok(_) = connect {
         println!("test_player connected successfully!");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        client_arc
-            .lock()
-            .await
-            .send_chat_message("Hi, I am test_player!".to_string())
-            .await;
-        //std::thread::spawn(|| {
-            minecraft::net::scanner::PacketScanner::start(client_other, Arc::new(Mutex::new(rx))).await;
-        //});
+        std::thread::spawn(move || {
+            futures::executor::block_on(minecraft::net::scanner::PacketScanner::start(
+                client_other,
+                Arc::new(Mutex::new(rx)),
+            ))
+        });
+        let mut buffer = String::new();
+        let stdin = std::io::stdin();
+        loop {
+            if let Ok(_) = stdin.read_line(&mut buffer) {
+                client_arc.lock().await.send_chat_message(&buffer).await;
+                buffer.clear();
+            }
+        }
     } else {
         println!("test_player failed to connect, {}", connect.err().unwrap())
-    }
-    loop {
-        // wait for exit
-        std::thread::sleep(std::time::Duration::from_millis(100))
     }
 }

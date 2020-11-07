@@ -8,7 +8,7 @@ const WRONG_PACKET_ERROR: &str = "Recieved an unexpected packet.";
 
 pub struct Client {
     address: SocketAddr,
-    profile: crate::auth::Profile,
+    pub profile: crate::auth::Profile,
     pub(crate) server: Option<ServerConnection>,
     connected: bool,
 }
@@ -52,8 +52,8 @@ impl Client {
         }
     }
 
-    pub async fn send_chat_message(&mut self, message: String) -> Result<()> {
-        let spec = proto::PlayClientChatMessageSpec { message };
+    pub async fn send_chat_message(&mut self, message: &String) -> Result<()> {
+        let spec = proto::PlayClientChatMessageSpec { message: message.clone() };
         self.send_packet(Packet::PlayClientChatMessage(spec)).await
     }
 

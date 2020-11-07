@@ -9,10 +9,12 @@ impl<'a> PacketHandler for Client {
     fn handle_packet(&self, packet: &Packet) {
         match packet {
             Packet::PlayServerChatMessage(body) => {
-                if let Some(message) = body.message.to_traditional() {
-                    println!("Received message: {}", message);
-                } else {
-                    println!("Raw message: {:?}", body);
+                if body.sender != self.profile.game_profile.id {
+                    if let Some(message) = body.message.to_traditional() {
+                        println!("{}", message);
+                    } else {
+                        println!("Raw message: {:?}", body);
+                    }
                 }
             }
             _ => {}

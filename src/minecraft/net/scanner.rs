@@ -12,7 +12,6 @@ pub struct PacketScanner;
 
 impl PacketScanner {
     pub async fn start(client: Arc<Mutex<Client>>, rx: Arc<Mutex<Receiver<()>>>) {
-        let sleep_time = Duration::from_millis(25);
         loop {
             if let Err(err) = rx.lock().await.try_recv() {
                 if err == TryRecvError::Closed {
@@ -25,7 +24,6 @@ impl PacketScanner {
                             client_lock.handle_packet(packet);
                         }
                     }
-                    std::thread::sleep(sleep_time);
                 } else {
                     break;
                 };
