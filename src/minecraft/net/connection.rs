@@ -2,8 +2,7 @@ use mcproto_rs::protocol::State;
 use mctokio::{Bridge, TcpReadBridge, TcpWriteBridge, TcpConnection};
 use std::net::SocketAddr;
 use anyhow::Result;
-use crate::proto;
-pub use proto::{Packet753 as Packet, RawPacket753 as RawPacket};
+use super::super::{Packet, RawPacket, proto};
 
 pub struct ServerConnection {
     reader: TcpReadBridge,

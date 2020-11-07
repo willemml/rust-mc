@@ -1,5 +1,5 @@
-use crate::net::{Packet, ServerConnection};
-use crate::proto::HandshakeNextState;
+use super::net::connection::ServerConnection;
+use super::{Packet, proto::HandshakeNextState};
 use mcproto_rs::status::StatusSpec;
 use mctokio::TcpConnection;
 use std::net::{IpAddr, SocketAddr};

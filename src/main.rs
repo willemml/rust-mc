@@ -1,22 +1,15 @@
 #![feature(array_chunks)]
 
-pub mod auth;
-pub mod client;
-pub mod handler;
-pub mod hash;
-pub mod net;
-pub mod scanner;
-pub mod status;
+pub mod mojang;
+pub mod minecraft;
 
-pub use mcproto_rs::v1_16_3 as proto;
+pub use mojang::auth;
+pub use minecraft::client::Client;
 
-use crate::handler::PacketHandler;
-use crate::net::Packet;
-use crate::scanner::PacketScanner;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 fn main() {
-    let status_checker = status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
+    let status_checker = minecraft::status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
     if let Ok(status) = status_checker.get_status_sync() {
         println!(
             "Description: {}",
@@ -29,7 +22,7 @@ fn main() {
 }
 
 async fn async_main() {
-    let mut client = client::MinecraftClient::new(
+    let mut client = Client::new(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
         auth::Profile::new("test", "", true),
     );
@@ -38,14 +31,5 @@ async fn async_main() {
         println!("Connected successfully!")
     } else {
         println!("Connection failed, {}", connect.err().unwrap())
-    }
-}
-
-pub struct TestHandler;
-
-impl PacketHandler for TestHandler {
-    fn handle_packet(&mut self, _packet: Packet, scanner: &mut PacketScanner) {
-        println!("Received a packet!");
-        scanner.stop();
     }
 }

@@ -80,7 +80,7 @@ impl Profile {
         }
     }
 
-    pub async fn join_server(&self, server_hash: String) -> Result<()> {
+    pub async fn join_server(&self, server_id: String) -> Result<()> {
         if self.offline {
             return Err(anyhow::anyhow!(
                 "Cannot join online-mode server with offline account."
@@ -90,7 +90,7 @@ impl Profile {
             let join_request = JoinRequest {
                 accessToken: self.access_token.clone(),
                 selectedProfile: self.game_profile.id.to_string().replace("-", ""),
-                serverId: server_hash,
+                serverId: super::hash::calc_hash(&server_id),
             };
             if let Ok(json) = serde_json::to_string(&join_request) {
                 let client = reqwest::Client::new();

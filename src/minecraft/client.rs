@@ -1,30 +1,40 @@
-use crate::net::Packet;
-use crate::net::ServerConnection;
+use super::{
+    net::connection::ServerConnection,
+    net::scanner::{PacketScanner, Stopper},
+    proto, Packet,
+};
 use anyhow::Result;
 use mcproto_rs::{protocol::State, types::CountedArray};
 use std::net::SocketAddr;
+use std::marker::PhantomData;
 
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
 const WRONG_PACKET_ERROR: &str = "Recieved an unexpected packet.";
 
-pub struct MinecraftClient {
+pub struct Client<'a> {
     address: SocketAddr,
     profile: crate::auth::Profile,
-    server: Option<ServerConnection>,
+    pub(crate) server: Option<ServerConnection>,
     connected: bool,
+    phantom: PhantomData<&'a bool>
 }
 
-impl MinecraftClient {
-    pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> Self {
-        MinecraftClient {
+impl<'a> Client<'a> {
+    pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> Client<'a> {
+        Self {
             address,
             profile,
             server: None,
             connected: false,
+            phantom: std::marker::PhantomData
         }
     }
 
-    pub async fn connect(&mut self) -> Result<()> {
+    fn start_loop(&'a mut self) -> Stopper {
+        PacketScanner::new(self).start()
+    }
+
+    pub async fn connect(&'a mut self) -> Result<Stopper> {
         let auth = self.profile.authenticate().await;
         if let Ok(_) = auth {
             if let Ok(connection) = ServerConnection::connect_async(self.address).await {
@@ -32,12 +42,16 @@ impl MinecraftClient {
                 if let Some(server) = &mut self.server {
                     if let Ok(_) = server
                         .handshake(
-                            crate::proto::HandshakeNextState::Login,
+                            proto::HandshakeNextState::Login,
                             &self.profile.game_profile.name,
                         )
                         .await
                     {
-                        self.login().await
+                        if let Err(err) = self.login().await {
+                            Err(err)
+                        } else {
+                            Ok(self.start_loop())
+                        }
                     } else {
                         Err(anyhow::anyhow!("Handshaking with server failed."))
                     }
@@ -49,7 +63,7 @@ impl MinecraftClient {
                 Err(anyhow::anyhow!("Failed to connect to server socket."))
             }
         } else {
-            auth
+            Err(auth.err().unwrap())
         }
     }
 
@@ -93,7 +107,7 @@ impl MinecraftClient {
         }
         if let Some(server) = &mut self.server {
             server.set_compression_threshold(threshold);
-            let read = self.read_packet().await;
+            /*let read = self.read_packet().await;
             if let Ok(packet) = read {
                 match packet {
                     Packet::LoginSuccess(_) => {
@@ -104,16 +118,14 @@ impl MinecraftClient {
                 }
             } else {
                 Err(read.err().unwrap())
-            }
+            }*/
+            Ok(())
         } else {
             Err(anyhow::anyhow!(SERVER_NONE_ERROR))
         }
     }
 
-    async fn enable_encryption(
-        &mut self,
-        spec: crate::proto::LoginEncryptionRequestSpec,
-    ) -> Result<()> {
+    async fn enable_encryption(&mut self, spec: proto::LoginEncryptionRequestSpec) -> Result<()> {
         if self.connected {
             return Err(anyhow::anyhow!("Already connected."));
         }
@@ -122,7 +134,6 @@ impl MinecraftClient {
                 "Cannot use encryption with offline account."
             ));
         }
-        let hash = crate::hash::calc_hash(&spec.server_id);
         let key = &spec.public_key.as_slice();
         let token = &spec.verify_token.as_slice();
         if let Some(server) = &mut self.server {
@@ -130,11 +141,11 @@ impl MinecraftClient {
             for mut _i in buf.iter() {
                 _i = &rand::random::<u8>();
             }
-            let response_spec = crate::proto::LoginEncryptionResponseSpec {
+            let response_spec = proto::LoginEncryptionResponseSpec {
                 shared_secret: CountedArray::from(buf.to_vec()),
                 verify_token: spec.verify_token.clone(),
             };
-            let auth = self.profile.join_server(hash).await;
+            let auth = self.profile.join_server(spec.server_id).await;
             if let Ok(_) = auth {
                 let respond = server
                     .write_packet(Packet::LoginEncryptionResponse(response_spec))
