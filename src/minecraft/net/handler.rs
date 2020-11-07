@@ -5,12 +5,15 @@ pub trait PacketHandler {
     fn handle_packet(&self, packet: &Packet);
 }
 
-impl<'a> PacketHandler for Client<'a> {
+impl<'a> PacketHandler for Client {
     fn handle_packet(&self, packet: &Packet) {
-        println!("yay it works!");
         match packet {
-            Packet::LoginSuccess(body) => {
-                println!("yay it works!")
+            Packet::PlayServerChatMessage(body) => {
+                if let Some(message) = body.message.to_traditional() {
+                    println!("Received message: {}", message);
+                } else {
+                    println!("Raw message: {:?}", body);
+                }
             }
             _ => {}
         };

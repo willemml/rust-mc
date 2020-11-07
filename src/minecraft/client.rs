@@ -1,40 +1,29 @@
-use super::{
-    net::connection::ServerConnection,
-    net::scanner::{PacketScanner, Stopper},
-    proto, Packet,
-};
+use super::{net::connection::ServerConnection, proto, Packet};
 use anyhow::Result;
 use mcproto_rs::{protocol::State, types::CountedArray};
 use std::net::SocketAddr;
-use std::marker::PhantomData;
 
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
 const WRONG_PACKET_ERROR: &str = "Recieved an unexpected packet.";
 
-pub struct Client<'a> {
+pub struct Client {
     address: SocketAddr,
     profile: crate::auth::Profile,
     pub(crate) server: Option<ServerConnection>,
     connected: bool,
-    phantom: PhantomData<&'a bool>
 }
 
-impl<'a> Client<'a> {
-    pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> Client<'a> {
+impl Client {
+    pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> Client {
         Self {
             address,
             profile,
             server: None,
             connected: false,
-            phantom: std::marker::PhantomData
         }
     }
 
-    fn start_loop(&'a mut self) -> Stopper {
-        PacketScanner::new(self).start()
-    }
-
-    pub async fn connect(&'a mut self) -> Result<Stopper> {
+    pub async fn connect(&mut self) -> Result<()> {
         let auth = self.profile.authenticate().await;
         if let Ok(_) = auth {
             if let Ok(connection) = ServerConnection::connect_async(self.address).await {
@@ -47,11 +36,7 @@ impl<'a> Client<'a> {
                         )
                         .await
                     {
-                        if let Err(err) = self.login().await {
-                            Err(err)
-                        } else {
-                            Ok(self.start_loop())
-                        }
+                        self.login().await
                     } else {
                         Err(anyhow::anyhow!("Handshaking with server failed."))
                     }
@@ -65,6 +50,11 @@ impl<'a> Client<'a> {
         } else {
             Err(auth.err().unwrap())
         }
+    }
+
+    pub async fn send_chat_message(&mut self, message: String) -> Result<()> {
+        let spec = proto::PlayClientChatMessageSpec { message };
+        self.send_packet(Packet::PlayClientChatMessage(spec)).await
     }
 
     async fn read_packet(&mut self) -> Result<Packet> {
@@ -103,25 +93,25 @@ impl<'a> Client<'a> {
 
     async fn set_compression_threshold(&mut self, threshold: i32) -> Result<()> {
         if self.connected {
-            return Err(anyhow::anyhow!("Already connected."));
-        }
-        if let Some(server) = &mut self.server {
-            server.set_compression_threshold(threshold);
-            /*let read = self.read_packet().await;
-            if let Ok(packet) = read {
-                match packet {
-                    Packet::LoginSuccess(_) => {
-                        self.connected = true;
-                        self.set_state(State::Play)
+            Err(anyhow::anyhow!("Already connected."))
+        } else {
+            if let Some(server) = &mut self.server {
+                server.set_compression_threshold(threshold);
+                let read = self.read_packet().await;
+                if let Ok(packet) = read {
+                    match packet {
+                        Packet::LoginSuccess(_) => {
+                            self.connected = true;
+                            self.set_state(State::Play)
+                        }
+                        _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
                     }
-                    _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
+                } else {
+                    Err(read.err().unwrap())
                 }
             } else {
-                Err(read.err().unwrap())
-            }*/
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(SERVER_NONE_ERROR))
+                Err(anyhow::anyhow!(SERVER_NONE_ERROR))
+            }
         }
     }
 

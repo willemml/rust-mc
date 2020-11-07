@@ -6,6 +6,10 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.release]
+lto = true
+codegen-units = 1
+
 [dependencies]
 tokio = { version = "0.2", features = ["rt-threaded"] }
 mcproto-rs = { git = "https://github.com/Twister915/mcproto-rs", branch = "master", features = ["v1_16_3"] }
