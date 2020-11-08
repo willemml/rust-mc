@@ -53,9 +53,8 @@ impl StatusChecker {
     /// ```
     pub async fn get_status(&self) -> Result<mcproto_rs::status::StatusSpec, anyhow::Error> {
         let address = SocketAddr::new(self.address, self.port);
-        let connection = TcpConnection::connect_to_server(address).await;
-        if let Ok(connected) = connection {
-            let mut server = ServerConnection::from_tcp_connection(connected);
+        let mut connection = ServerConnection::connect_async(address).await;
+        if let Ok(server) = &mut connection {
             let handshake = server
                 .handshake(HandshakeNextState::Status, &"".to_string())
                 .await;

@@ -291,6 +291,7 @@ impl Client {
     }
 
     /// Enables encryption on the client, requires authentication with mojang.
+    /// Still WIP, does not actually work.
     async fn enable_encryption(&mut self, spec: proto::LoginEncryptionRequestSpec) -> Result<()> {
         if self.connected {
             return Err(anyhow::anyhow!("Already connected."));
