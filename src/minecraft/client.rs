@@ -38,14 +38,14 @@ impl Client {
     ///
     /// * `address` Socket address of the server the client should connect to.
     /// * `profile` Minecraft account/profile that the client should use.
-    /// 
+    ///
     /// # Examples
     ///
     /// ```rust
     /// use rust_mc::minecraft::client::Client;
     /// use rust_mc::mojang::auth::Profile;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    /// 
+    ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
     ///     Profile::new("player_name", "", true),
@@ -71,12 +71,12 @@ impl Client {
     /// use rust_mc::mojang::auth::Profile;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     /// use futures::executor::block_on;
-    /// 
+    ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
     ///      auth::Profile::new("player_name", "", true),
     /// );
-    /// 
+    ///
     /// block_on(client.connect()); // Connect the client.
     /// ```
     pub async fn connect(&mut self) -> Result<()> {
@@ -110,7 +110,7 @@ impl Client {
 
     /// Spawns a thread that reads packets and tells the client's packet handler about them until told to stop
     /// If the client is not connected the thread will not do anything and will die.
-    /// 
+    ///
     /// # Arguments
     ///
     /// * `client` Minecraft client to read packets from.
@@ -126,12 +126,12 @@ impl Client {
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     /// use tokio::sync::mpsc::channel;
     /// use futures::executor::block_on;
-    /// 
+    ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
     ///     auth::Profile::new("player_name", "", true),
     /// );
-    /// 
+    ///
     /// block_on(client.connect()); // Connect the client before starting the loop.
     /// let (tx, rx) = mpsc::channel(20);
     ///
@@ -148,15 +148,15 @@ impl Client {
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     /// use tokio::sync::mpsc::channel;
     /// use futures::executor::block_on;
-    /// 
+    ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
     ///      auth::Profile::new("player_name", "", true),
     /// );
-    /// 
+    ///
     /// block_on(client.connect()); // Connect the client before starting the loop.
     /// let (tx, rx) = mpsc::channel(20);
-    /// 
+    ///
     /// let client_arc = Arc::new(Mutex::new(client)); // Create the client arc mutex before calling the function.
     /// let client_arc_clone = client_arc.clone();  // Clone the client arc before passing it so that you have one in this scope.
     ///
@@ -211,12 +211,12 @@ impl Client {
     /// use rust_mc::mojang::auth::Profile;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     /// use futures::executor::block_on;
-    /// 
+    ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
     ///      auth::Profile::new("player_name", "", true),
     /// );
-    /// 
+    ///
     /// block_on(client.connect()); // Connect the client before sending the message.
     ///
     /// block_on(client.send_chat_message("Hello!".to_string())); // Send the chat message.

@@ -1,38 +1,64 @@
 use super::net::connection::ServerConnection;
-use super::{Packet, proto::HandshakeNextState};
+use super::{proto::HandshakeNextState, Packet};
 use mcproto_rs::status::StatusSpec;
 use mctokio::TcpConnection;
 use std::net::{IpAddr, SocketAddr};
 
+/// A status checker for Minecraft servers.
 pub struct StatusChecker {
+    /// IP address of the server to get the status of.
     address: IpAddr,
+    /// Port of the server to get the status of.
     port: u16,
 }
 
 impl StatusChecker {
+    /// Returns a StatusChecker for `address`:`port`.
+    ///
+    /// # Arguments
+    ///
+    /// * `address` IP of the new StatusChecker should attach to.
+    /// * `port` Port of the new StatusChecker should attach to.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use rust_mc::minecraft::status::StatusChecker;
+    ///
+    /// let status_checker = minecraft::status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
+    /// ```
     pub fn new(address: IpAddr, port: u16) -> Self {
         Self { address, port }
     }
 
-    pub fn get_status_sync(&self) -> Result<StatusSpec, anyhow::Error> {
-        let status = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(self.get_status());
-        return if let Ok(status) = status {
-            Ok(status)
-        } else {
-            Err(status
-                .err()
-                .unwrap_or(anyhow::anyhow!("Failed to get status.".to_string())))
-        };
-    }
-
+    /// Get the status of the attached server asynchronously.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use futures::executor::block_on;
+    /// use rust_mc::minecraft::status::StatusChecker;
+    ///
+    /// let status_checker = minecraft::status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
+    ///
+    /// let status = async {
+    ///     if let Ok(status) = status_checker.get_status().await {   
+    ///         println!("Server description: {}", status.description.to_traditional().unwrap().to_string());
+    ///     }
+    /// }
+    ///
+    /// block_on(status);
+    /// ```
     pub async fn get_status(&self) -> Result<mcproto_rs::status::StatusSpec, anyhow::Error> {
         let address = SocketAddr::new(self.address, self.port);
         let connection = TcpConnection::connect_to_server(address).await;
         if let Ok(connected) = connection {
             let mut server = ServerConnection::from_tcp_connection(connected);
-            let handshake = server.handshake(HandshakeNextState::Status, &"".to_string()).await;
+            let handshake = server
+                .handshake(HandshakeNextState::Status, &"".to_string())
+                .await;
             if let Ok(_) = &handshake {
                 let packet = server.read_next_packet().await;
                 if let Ok(packet) = packet {
@@ -48,5 +74,33 @@ impl StatusChecker {
             }
         };
         return Err(anyhow::anyhow!("Error sending packets."));
+    }
+
+    /// Get the status of the attached server in a synchronous fashion.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use futures::executor::block_on;
+    /// use rust_mc::minecraft::status::StatusChecker;
+    ///
+    /// let status_checker = minecraft::status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
+    ///
+    /// if let Ok(status) = status_checker.get_status_sync() {   
+    ///     println!("Server description: {}", status.description.to_traditional().unwrap().to_string());
+    /// }
+    /// ```
+    pub fn get_status_sync(&self) -> Result<StatusSpec, anyhow::Error> {
+        let status = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(self.get_status());
+        return if let Ok(status) = status {
+            Ok(status)
+        } else {
+            Err(status
+                .err()
+                .unwrap_or(anyhow::anyhow!("Failed to get status.".to_string())))
+        };
     }
 }
