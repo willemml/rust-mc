@@ -5,7 +5,7 @@ pub trait PacketHandler {
     fn handle_packet(&self, packet: &Packet);
 }
 
-impl<'a> PacketHandler for Client {
+impl PacketHandler for Client {
     fn handle_packet(&self, packet: &Packet) {
         match packet {
             Packet::PlayServerChatMessage(body) => {

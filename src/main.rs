@@ -7,10 +7,7 @@ pub use minecraft::client::Client;
 pub use mojang::auth;
 
 use std::sync::Arc;
-use std::{
-    io::Read,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::sync::{mpsc, Mutex};
 
 fn main() {
@@ -37,13 +34,7 @@ async fn async_main() {
     let client_other = client_arc.clone();
     let (_tx, rx) = mpsc::channel(20);
     if let Ok(_) = connect {
-        println!("test_player connected successfully!");
-        std::thread::spawn(move || {
-            futures::executor::block_on(minecraft::net::scanner::PacketScanner::start(
-                client_other,
-                Arc::new(Mutex::new(rx)),
-            ))
-        });
+        Client::start_loop(client_other, rx);
         let mut buffer = String::new();
         let stdin = std::io::stdin();
         loop {

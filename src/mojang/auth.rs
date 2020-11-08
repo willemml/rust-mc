@@ -9,6 +9,7 @@ pub struct Profile {
     username: String,
     password: String,
     access_token: String,
+    client_token: Option<String>,
     pub offline: bool,
     pub game_profile: MinecraftProfile,
 }
@@ -23,6 +24,7 @@ impl Profile {
             username: username.to_string(),
             password: password.to_string(),
             access_token: "".to_string(),
+            client_token: None,
             offline,
             game_profile,
         }

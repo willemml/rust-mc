@@ -1,7 +1,18 @@
-use super::{net::connection::ServerConnection, proto, Packet};
+use super::{
+    net::{connection::ServerConnection, handler::PacketHandler},
+    proto, Packet,
+};
 use anyhow::Result;
 use mcproto_rs::{protocol::State, types::CountedArray};
 use std::net::SocketAddr;
+
+use std::sync::Arc;
+use tokio::sync::{
+    mpsc::{self, error::TryRecvError},
+    Mutex,
+};
+
+use std::thread::{spawn, JoinHandle};
 
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
 const WRONG_PACKET_ERROR: &str = "Recieved an unexpected packet.";
@@ -20,6 +31,31 @@ impl Client {
             profile,
             server: None,
             connected: false,
+        }
+    }
+
+    pub fn start_loop(client: Arc<Mutex<Self>>, receiver: mpsc::Receiver<()>) -> JoinHandle<()> {
+        spawn(move || futures::executor::block_on(Self::packet_loop(client, receiver)))
+    }
+
+    async fn packet_loop(client: Arc<Mutex<Self>>, receiver: mpsc::Receiver<()>) {
+        let mut receiver = receiver;
+        loop {
+            if let Err(err) = receiver.try_recv() {
+                if err == TryRecvError::Closed {
+                    break;
+                }
+                let client_lock = &mut client.lock().await;
+                if let Some(server) = &mut client_lock.server {
+                    if let Ok(packet) = &mut server.read_next_packet().await {
+                        if let Some(packet) = packet {
+                            client_lock.handle_packet(packet)
+                        }
+                    }
+                } else {
+                    break;
+                }
+            }
         }
     }
 
@@ -53,7 +89,9 @@ impl Client {
     }
 
     pub async fn send_chat_message(&mut self, message: &String) -> Result<()> {
-        let spec = proto::PlayClientChatMessageSpec { message: message.clone() };
+        let spec = proto::PlayClientChatMessageSpec {
+            message: message.clone(),
+        };
         self.send_packet(Packet::PlayClientChatMessage(spec)).await
     }
 
