@@ -48,7 +48,7 @@ impl Client {
     ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///     Profile::new("player_name", "", true),
+    ///     Profile::new("rust_mc", "", true),
     /// );
     /// ```
     pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> Client {
@@ -74,7 +74,7 @@ impl Client {
     ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///      auth::Profile::new("player_name", "", true),
+    ///     Profile::new("rust_mc", "", true),
     /// );
     ///
     /// block_on(client.connect()); // Connect the client.
@@ -129,7 +129,7 @@ impl Client {
     ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///     auth::Profile::new("player_name", "", true),
+    ///     Profile::new("rust_mc", "", true),
     /// );
     ///
     /// block_on(client.connect()); // Connect the client before starting the loop.
@@ -151,7 +151,7 @@ impl Client {
     ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///      auth::Profile::new("player_name", "", true),
+    ///     Profile::new("rust_mc", "", true),
     /// );
     ///
     /// block_on(client.connect()); // Connect the client before starting the loop.
@@ -214,7 +214,7 @@ impl Client {
     ///
     /// let mut client = Client::new(
     ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///      auth::Profile::new("player_name", "", true),
+    ///     Profile::new("rust_mc", "", true),
     /// );
     ///
     /// block_on(client.connect()); // Connect the client before sending the message.
