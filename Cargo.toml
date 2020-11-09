@@ -2,6 +2,9 @@
 name = "rust-mc"
 version = "0.2.0"
 authors = ["willemml"]
+license = "GPL-3.0-only"
+description = "A Minecraft client library using mcproto-rs and mctokio."
+repository = "https://github.com/willemml/rust-mc"
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,8 +15,8 @@ codegen-units = 1
 
 [dependencies]
 tokio = { version = "0.2", features = ["rt-threaded"] }
-mcproto-rs = { git = "https://github.com/Twister915/mcproto-rs", branch = "master", features = ["v1_16_3"] }
-mctokio = { git = "https://github.com/Twister915/mctokio", branch = "master" }
+mcproto-rs = { git = "https://github.com/Twister915/mcproto-rs", branch = "master", features = ["v1_16_3"], version = "0.2" }
+mctokio = { git = "https://github.com/Twister915/mctokio", branch = "master", version = "0.1" }
 anyhow = "1.0.34"
 rand = "0.3"
 serde_json = "1.0.59"

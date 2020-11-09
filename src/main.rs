@@ -1,6 +1,8 @@
 #![feature(array_chunks)]
 
+/// Minecraft implementations.
 pub mod minecraft;
+/// Mojang API implementation.
 pub mod mojang;
 
 pub use minecraft::client::Client;
