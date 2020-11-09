@@ -23,6 +23,8 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
+    /// These examples require a Minecraft server to be running on localhost:25565.
+    ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -55,6 +57,8 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
+    /// This example require a Minecraft server to be running on localhost:25565.
+    ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -83,6 +87,8 @@ impl ServerConnection {
     /// * `writer` Write channel of a connected Socket.
     ///
     /// # Examples
+    ///
+    /// This example require a Minecraft server to be running on localhost:25565.
     ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
@@ -116,6 +122,8 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
+    /// This example require a Minecraft server to be running on localhost:25565.
+    ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -140,6 +148,8 @@ impl ServerConnection {
     /// * `name` The name of the player connecting, can be blank if `next_state` is Status.
     ///
     /// # Examples
+    ///
+    /// These examples require a Minecraft server to be running on localhost:25565.
     ///
     /// When you are trying to get the status of the server:
     /// ```rust
@@ -231,6 +241,8 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
+    /// This example require a Minecraft server to be running on localhost:25565.
+    ///
     /// ```rust
     /// use rust_mc::minecraft::{Packet::PlayClientChatMessage, proto::PlayClientChatMessageSpec};
     /// use rust_mc::minecraft::net::connection::ServerConnection;
@@ -265,6 +277,8 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
+    /// This example require a Minecraft server to be running on localhost:25565.
+    ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -297,6 +311,8 @@ impl ServerConnection {
     /// * `iv` Initial vector for the encryption, usually the server's ID.
     ///
     /// # Examples
+    ///
+    /// This example require a Minecraft server to be running on localhost:25565.
     ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
@@ -332,6 +348,8 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
+    /// This example require a Minecraft server to be running on localhost:25565.
+    ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -357,6 +375,8 @@ impl ServerConnection {
     /// Reads the next packet from the buffer of packets received from the server
     ///
     /// # Examples
+    ///
+    /// This example require a Minecraft server to be running on localhost:25565.
     ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
