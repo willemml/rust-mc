@@ -11,11 +11,15 @@ const REFRESH_URL: &str = "https://authserver.mojang.com/refresh";
 
 /// A Minecraft player user account.
 pub struct Profile {
+    /// Username or email of the Minecraft account.
     username: String,
+    /// Password of the Minecraft account.
     password: String,
     access_token: String,
     client_token: String,
+    /// Whether or not this account authenticates with Mojang (true for no, false for yes).
     pub offline: bool,
+    /// The information on the Minecraft player attached to this account.
     pub game_profile: MinecraftProfile,
 }
 
@@ -321,9 +325,12 @@ impl Profile {
     }
 }
 
+/// Minecraft player ID data.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct MinecraftProfile {
+    /// Username of the player.
     pub name: String,
+    /// UUID of the player.
     pub id: UUID4,
 }
 
