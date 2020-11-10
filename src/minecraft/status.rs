@@ -63,7 +63,7 @@ impl StatusChecker {
         let mut connection = MinecraftConnection::connect_async(address).await;
         if let Ok(server) = &mut connection {
             let handshake = server
-                .handshake(Some(HandshakeNextState::Status), None, None, None)
+                .handshake(Some(HandshakeNextState::Status), None)
                 .await;
             if let Ok(_) = &handshake {
                 let packet = server.read_next_packet().await;

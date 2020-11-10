@@ -188,13 +188,12 @@ impl MinecraftConnection {
     }
 
     /// Completes the Handshaking sequence with the Minecraft server.
+    /// Returns the state that was set or receieved by the client.
     ///
     /// # Arguments
     ///
     /// * `next_state` The state to enter after Handshake, should be None when called by a server.
-    /// * `status` The status that should be sent by a connection client, should be None when called by a client.
     /// * `name` The name of the player connecting, can be `None` if `next_state` is Status or if this is called by a server.
-    /// * `compression_threshold` Sets the compression threshold for the client that is connection to the server, no compression if this is `None`.
     ///
     /// # Examples
     ///
@@ -214,7 +213,7 @@ impl MinecraftConnection {
     ///         loop {
     ///             if let Ok((socket, address)) = listener.accept().await {
     ///                 let mut client_connection = MinecraftConnection::from_tcp_stream(socket);
-    ///                 client_connection.handshake(None, None, None, Some(256)).await;
+    ///                 client_connection.handshake(None, Some(256)).await;
     ///            }
     ///         }
     ///     }
@@ -239,7 +238,7 @@ impl MinecraftConnection {
     ///     let mut connection = ServerConnection::connect_async(address).await;
     ///
     ///     if let Ok(server) = &mut connection {
-    ///         let handshake = server.handshake(Status, None, None, None).await; // Note the usage of `None` here as this is a "status" handshake.
+    ///         let handshake = server.handshake(Status, None).await; // Note the usage of `None` here as this is a "status" handshake.
     ///         if let Ok(_) = &handshake {
     ///             // Do stuff on Handshake success here
     ///         };
@@ -263,7 +262,7 @@ impl MinecraftConnection {
     ///     let mut connection = ServerConnection::connect_async(address).await;
     ///
     ///     if let Ok(server) = &mut connection {
-    ///         let handshake = server.handshake(Login, None, Some("test_player".to_string()), None).await; // Note the string with a username here as this is a "login" handshake.
+    ///         let handshake = server.handshake(Login, Some("test_player".to_string())).await; // Note the string with a username here as this is a "login" handshake.
     ///         if let Ok(_) = &handshake {
     ///             // Do stuff on Handshake success here
     ///         };
@@ -275,10 +274,8 @@ impl MinecraftConnection {
     pub async fn handshake(
         &mut self,
         next_state: Option<proto::HandshakeNextState>,
-        status: Option<StatusSpec>,
         name: Option<String>,
-        compression_threshold: Option<i32>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<State> {
         if self.packet_direction == PacketDirection::ClientBound {
             let first = self.read_next_packet().await;
             if let Ok(first) = first {
@@ -286,90 +283,15 @@ impl MinecraftConnection {
                     match body.next_state {
                         HandshakeNextState::Status => {
                             self.set_state(State::Status);
-                            let second = self.read_next_packet().await;
-                            if let Ok(second) = second {
-                                if let Some(Packet::StatusRequest(_)) = second {
-                                    let status = if let Some(status_spec) = status {
-                                        status_spec
-                                    } else {
-                                        StatusSpec {
-                                        description: Chat::from_text("Welcome to rust-mc, a Minecraft server and client written in rust!"),
-                                        version: StatusVersionSpec {
-                                            name: "rust-mc".to_string(),
-                                            protocol: 753
-                                        },
-                                        players: StatusPlayersSpec {
-                                            max: 20,
-                                            online: 10,
-                                            sample: Vec::default()
-                                        },
-                                        favicon: None,
-                                    }
-                                    };
-                                    let response_spec = StatusResponseSpec { response: status };
-                                    if let Err(error) = self
-                                        .write_packet(Packet::StatusResponse(response_spec))
-                                        .await
-                                    {
-                                        return Err(error);
-                                    }
-                                    let third = self.read_next_packet().await;
-                                    if let Ok(third) = third {
-                                        if let Some(Packet::StatusPing(body)) = third {
-                                            if let Err(error) = self
-                                                .write_packet(Packet::StatusPong(
-                                                    proto::StatusPongSpec {
-                                                        payload: body.payload,
-                                                    },
-                                                ))
-                                                .await
-                                            {
-                                                return Err(error);
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                return Err(second.err().unwrap());
-                            }
+                            return Ok(State::Status)
                         }
                         HandshakeNextState::Login => {
                             self.set_state(State::Login);
-                            let second = self.read_next_packet().await;
-                            if let Ok(second) = second {
-                                if let Some(Packet::LoginStart(body)) = second {
-                                    if let Some(compression_threshold) = compression_threshold {
-                                        let response_spec = proto::LoginSetCompressionSpec {
-                                            threshold: VarInt::from(compression_threshold),
-                                        };
-                                        if let Err(error) = self
-                                            .write_packet(Packet::LoginSetCompression(
-                                                response_spec,
-                                            ))
-                                            .await
-                                        {
-                                            return Err(error);
-                                        } else {
-                                            self.set_compression_threshold(compression_threshold);
-                                        }
-                                    }
-                                    if let Err(error) = self
-                                        .write_packet(Packet::LoginSuccess(
-                                            proto::LoginSuccessSpec {
-                                                username: body.name,
-                                                uuid: UUID4::random(),
-                                            },
-                                        ))
-                                        .await
-                                    {
-                                        return Err(error);
-                                    }
-                                }
-                            } else {
-                                return Err(second.err().unwrap());
-                            }
+                            return Ok(State::Login)
                         }
                     }
+                } else {
+                    return Err(anyhow::anyhow!("Did not receive handshake packet."));
                 }
             } else {
                 return Err(first.err().unwrap());
@@ -393,6 +315,7 @@ impl MinecraftConnection {
                         {
                             return Err(error);
                         }
+                        return Ok(State::Status);
                     } else {
                         self.set_state(State::Login);
                         if let Some(name) = name {
@@ -404,6 +327,7 @@ impl MinecraftConnection {
                             {
                                 return Err(error);
                             }
+                            return Ok(State::Login);
                         } else {
                             return Err(anyhow::anyhow!(
                                 "Username cannot be empty when next_state is Login."
@@ -417,7 +341,6 @@ impl MinecraftConnection {
                 ));
             }
         }
-        return Ok(());
     }
 
     /// Sends a packet to the target.

@@ -88,9 +88,7 @@ impl Client {
                     if let Ok(_) = server
                         .handshake(
                             Some(proto::HandshakeNextState::Login),
-                            None,
                             Some(self.profile.game_profile.name.clone()),
-                            None,
                         )
                         .await
                     {
