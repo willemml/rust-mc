@@ -1,7 +1,7 @@
 use super::net::connection::MinecraftConnection;
 use super::{
     proto::{HandshakeNextState, StatusResponseSpec},
-    Packet::{self, StatusResponse},
+    Packet,
 };
 use mcproto_rs::status::{StatusFaviconSpec, StatusPlayersSpec, StatusSpec, StatusVersionSpec};
 use mcproto_rs::types::Chat;

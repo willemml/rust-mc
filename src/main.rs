@@ -21,11 +21,13 @@ fn main() {
             status.description.to_traditional().unwrap().to_string()
         );
     }
-    let mut server = Server::new("127.0.0.1:25565".to_string());
-    server.start();
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async { async_main().await });
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let mut runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.spawn(async { Server::new("127.0.0.1:25565".to_string()).start().await });
+    runtime.block_on(async { async_main().await });
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 async fn async_main() {
@@ -43,7 +45,9 @@ async fn async_main() {
         let stdin = std::io::stdin();
         loop {
             if let Ok(_) = stdin.read_line(&mut buffer) {
-                client_arc.lock().await.send_chat_message(&buffer).await;
+                if let Err(_) = client_arc.lock().await.send_chat_message(&buffer).await {
+                    println!("Failed to send message...")
+                }
                 buffer.clear();
             }
         }

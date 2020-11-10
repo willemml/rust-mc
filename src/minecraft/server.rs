@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
-use tokio::{sync::Mutex, net::TcpListener};
-use mcproto_rs::protocol::PacketDirection;
+use tokio::{net::TcpListener, sync::Mutex};
 
 use super::net::connection::MinecraftConnection;
 
@@ -14,26 +13,26 @@ impl Server {
     pub fn new(bind_address: String) -> Self {
         Server {
             connections: Arc::new(Mutex::new(vec![])),
-            bind_address
+            bind_address,
         }
     }
 
-    pub fn start(&mut self) {
+    pub async fn start(&mut self) {
         let connections = self.connections.clone();
         let address = self.bind_address.clone();
-        let listener = async move {
-            let mut listener = TcpListener::bind(address).await;
-            if let Ok(listener) = &mut listener {
-                loop {
-                    if let Ok((socket, address)) = listener.accept().await {
-                        println!("Incoming connection from {}.", address.to_string());
-                        let mut client = MinecraftConnection::from_tcp_stream(socket);
-                        client.handshake(None, None, None).await;
-                        connections.lock().await.push(client);
+        let mut listener = TcpListener::bind(address).await;
+        if let Ok(listener) = &mut listener {
+            loop {
+                if let Ok((socket, address)) = listener.accept().await {
+                    let mut client = MinecraftConnection::from_tcp_stream(socket);
+                    if let Err(error) = client.handshake(None, None, None).await {
+                        println!("Handshake with {} failed: {}", address.to_string(), error)
+                    } else {
+                        println!("Handshake with {} successful.", address.to_string())
                     }
+                    connections.lock().await.push(client);
                 }
             }
-        };
-        tokio::runtime::Runtime::new().unwrap().block_on(listener);
+        }
     }
 }

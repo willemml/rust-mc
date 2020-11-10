@@ -7,6 +7,8 @@ use mcproto_rs::{
     protocol::{PacketDirection, State},
     status::{StatusPlayersSpec, StatusSpec, StatusVersionSpec},
     types::Chat,
+    types::VarInt,
+    uuid::UUID4,
 };
 use mctokio::{Bridge, TcpConnection, TcpReadBridge, TcpWriteBridge};
 use std::net::SocketAddr;
@@ -281,6 +283,7 @@ impl MinecraftConnection {
                 if let Some(Packet::Handshake(body)) = first {
                     match body.next_state {
                         HandshakeNextState::Status => {
+                            self.set_state(State::Status);
                             let second = self.read_next_packet().await;
                             if let Ok(second) = second {
                                 if let Some(Packet::StatusRequest(_)) = second {
@@ -288,9 +291,9 @@ impl MinecraftConnection {
                                         status_spec
                                     } else {
                                         StatusSpec {
-                                        description: Chat::from_text("rust-mc, a Minecraft server and client written in rust!"),
+                                        description: Chat::from_text("Welcome to rust-mc, a Minecraft server and client written in rust!"),
                                         version: StatusVersionSpec {
-                                            name: "1.16.3".to_string(),
+                                            name: "rust-mc".to_string(),
                                             protocol: 753
                                         },
                                         players: StatusPlayersSpec {
@@ -308,12 +311,56 @@ impl MinecraftConnection {
                                     {
                                         return Err(error);
                                     }
+                                    let third = self.read_next_packet().await;
+                                    if let Ok(third) = third {
+                                        if let Some(Packet::StatusPing(body)) = third {
+                                            if let Err(error) = self
+                                                .write_packet(Packet::StatusPong(
+                                                    proto::StatusPongSpec {
+                                                        payload: body.payload,
+                                                    },
+                                                ))
+                                                .await
+                                            {
+                                                return Err(error);
+                                            }
+                                        }
+                                    }
                                 }
                             } else {
                                 return Err(second.err().unwrap());
                             }
                         }
-                        HandshakeNextState::Login => {}
+                        HandshakeNextState::Login => {
+                            self.set_state(State::Login);
+                            let second = self.read_next_packet().await;
+                            if let Ok(second) = second {
+                                if let Some(Packet::LoginStart(body)) = second {
+                                    let response_spec = proto::LoginSetCompressionSpec {
+                                        threshold: VarInt::from(1024),
+                                    };
+                                    if let Err(error) = self
+                                        .write_packet(Packet::LoginSetCompression(response_spec))
+                                        .await
+                                    {
+                                        return Err(error);
+                                    }
+                                    if let Err(error) = self
+                                        .write_packet(Packet::LoginSuccess(
+                                            proto::LoginSuccessSpec {
+                                                username: body.name,
+                                                uuid: UUID4::random(),
+                                            },
+                                        ))
+                                        .await
+                                    {
+                                        return Err(error);
+                                    }
+                                }
+                            } else {
+                                return Err(second.err().unwrap());
+                            }
+                        }
                     }
                 }
             } else {
