@@ -90,6 +90,7 @@ impl Client {
                             Some(proto::HandshakeNextState::Login),
                             None,
                             Some(self.profile.game_profile.name.clone()),
+                            None,
                         )
                         .await
                     {

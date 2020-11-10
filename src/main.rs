@@ -5,14 +5,17 @@ pub mod minecraft;
 /// Mojang API implementation.
 pub mod mojang;
 
-pub use minecraft::{server::Server, client::Client};
+pub use minecraft::{client::Client, server::Server};
 pub use mojang::auth;
 
-use std::sync::Arc;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 fn main() {
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let mut runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.spawn(async { Server::new("127.0.0.1:25565".to_string()).start().await });
     let status_checker =
         minecraft::status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
     if let Ok(status) = status_checker.get_status_sync() {
@@ -21,9 +24,6 @@ fn main() {
             status.description.to_traditional().unwrap().to_string()
         );
     }
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.spawn(async { Server::new("127.0.0.1:25565".to_string()).start().await });
     runtime.block_on(async { async_main().await });
     loop {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -40,6 +40,7 @@ async fn async_main() {
     let client_other = client_arc.clone();
     let (_tx, rx) = mpsc::channel(20);
     if let Ok(_) = connect {
+        println!("Successfully connected to localhost:25565");
         Client::start_loop(client_other, rx);
         let mut buffer = String::new();
         let stdin = std::io::stdin();

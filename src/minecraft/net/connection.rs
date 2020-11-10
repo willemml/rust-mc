@@ -193,7 +193,8 @@ impl MinecraftConnection {
     ///
     /// * `next_state` The state to enter after Handshake, should be None when called by a server.
     /// * `status` The status that should be sent by a connection client, should be None when called by a client.
-    /// * `name` The name of the player connecting, can be `None` if `next_state` is Status.
+    /// * `name` The name of the player connecting, can be `None` if `next_state` is Status or if this is called by a server.
+    /// * `compression_threshold` Sets the compression threshold for the client that is connection to the server, no compression if this is `None`.
     ///
     /// # Examples
     ///
@@ -213,7 +214,7 @@ impl MinecraftConnection {
     ///         loop {
     ///             if let Ok((socket, address)) = listener.accept().await {
     ///                 let mut client_connection = MinecraftConnection::from_tcp_stream(socket);
-    ///                 client_connection.handshake(None, None, None).await;
+    ///                 client_connection.handshake(None, None, None, Some(256)).await;
     ///            }
     ///         }
     ///     }
@@ -238,7 +239,7 @@ impl MinecraftConnection {
     ///     let mut connection = ServerConnection::connect_async(address).await;
     ///
     ///     if let Ok(server) = &mut connection {
-    ///         let handshake = server.handshake(Status, None, None).await; // Note the usage of `None` here as this is a "status" handshake.
+    ///         let handshake = server.handshake(Status, None, None, None).await; // Note the usage of `None` here as this is a "status" handshake.
     ///         if let Ok(_) = &handshake {
     ///             // Do stuff on Handshake success here
     ///         };
@@ -262,7 +263,7 @@ impl MinecraftConnection {
     ///     let mut connection = ServerConnection::connect_async(address).await;
     ///
     ///     if let Ok(server) = &mut connection {
-    ///         let handshake = server.handshake(Login, None, Some("test_player".to_string())).await; // Note the string with a username here as this is a "login" handshake.
+    ///         let handshake = server.handshake(Login, None, Some("test_player".to_string()), None).await; // Note the string with a username here as this is a "login" handshake.
     ///         if let Ok(_) = &handshake {
     ///             // Do stuff on Handshake success here
     ///         };
@@ -276,6 +277,7 @@ impl MinecraftConnection {
         next_state: Option<proto::HandshakeNextState>,
         status: Option<StatusSpec>,
         name: Option<String>,
+        compression_threshold: Option<i32>,
     ) -> anyhow::Result<()> {
         if self.packet_direction == PacketDirection::ClientBound {
             let first = self.read_next_packet().await;
@@ -336,14 +338,20 @@ impl MinecraftConnection {
                             let second = self.read_next_packet().await;
                             if let Ok(second) = second {
                                 if let Some(Packet::LoginStart(body)) = second {
-                                    let response_spec = proto::LoginSetCompressionSpec {
-                                        threshold: VarInt::from(1024),
-                                    };
-                                    if let Err(error) = self
-                                        .write_packet(Packet::LoginSetCompression(response_spec))
-                                        .await
-                                    {
-                                        return Err(error);
+                                    if let Some(compression_threshold) = compression_threshold {
+                                        let response_spec = proto::LoginSetCompressionSpec {
+                                            threshold: VarInt::from(compression_threshold),
+                                        };
+                                        if let Err(error) = self
+                                            .write_packet(Packet::LoginSetCompression(
+                                                response_spec,
+                                            ))
+                                            .await
+                                        {
+                                            return Err(error);
+                                        } else {
+                                            self.set_compression_threshold(compression_threshold);
+                                        }
                                     }
                                     if let Err(error) = self
                                         .write_packet(Packet::LoginSuccess(

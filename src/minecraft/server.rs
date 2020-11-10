@@ -25,7 +25,7 @@ impl Server {
             loop {
                 if let Ok((socket, address)) = listener.accept().await {
                     let mut client = MinecraftConnection::from_tcp_stream(socket);
-                    if let Err(error) = client.handshake(None, None, None).await {
+                    if let Err(error) = client.handshake(None, None, None, Some(256)).await {
                         println!("Handshake with {} failed: {}", address.to_string(), error)
                     } else {
                         println!("Handshake with {} successful.", address.to_string())
