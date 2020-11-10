@@ -1,8 +1,15 @@
-use super::net::connection::ServerConnection;
-use super::{proto::HandshakeNextState, Packet};
-use mcproto_rs::status::StatusSpec;
-use mctokio::TcpConnection;
-use std::net::{IpAddr, SocketAddr};
+use super::net::connection::MinecraftConnection;
+use super::{
+    proto::{HandshakeNextState, StatusResponseSpec},
+    Packet::{self, StatusResponse},
+};
+use mcproto_rs::status::{StatusFaviconSpec, StatusPlayersSpec, StatusSpec, StatusVersionSpec};
+use mcproto_rs::types::Chat;
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
+use tokio::sync::Mutex;
 
 /// A status checker for Minecraft servers.
 pub struct StatusChecker {
@@ -51,12 +58,12 @@ impl StatusChecker {
     ///
     /// block_on(status);
     /// ```
-    pub async fn get_status(&self) -> Result<mcproto_rs::status::StatusSpec, anyhow::Error> {
+    pub async fn get_status(&self) -> Result<StatusSpec, anyhow::Error> {
         let address = SocketAddr::new(self.address, self.port);
-        let mut connection = ServerConnection::connect_async(address).await;
+        let mut connection = MinecraftConnection::connect_async(address).await;
         if let Ok(server) = &mut connection {
             let handshake = server
-                .handshake(HandshakeNextState::Status, &"".to_string())
+                .handshake(Some(HandshakeNextState::Status), None, None)
                 .await;
             if let Ok(_) = &handshake {
                 let packet = server.read_next_packet().await;
@@ -101,5 +108,36 @@ impl StatusChecker {
                 .err()
                 .unwrap_or(anyhow::anyhow!("Failed to get status.".to_string())))
         };
+    }
+}
+
+pub struct ServerStatus {
+    description: Chat,
+    version: StatusVersionSpec,
+    players: StatusPlayersSpec,
+    favicon: Option<StatusFaviconSpec>,
+}
+
+impl ServerStatus {
+    pub async fn send_status(&self, client: Arc<Mutex<MinecraftConnection>>) -> Result<(), ()> {
+        let status_spec = StatusSpec {
+            description: self.description.clone(),
+            favicon: self.favicon.clone(),
+            players: self.players.clone(),
+            version: self.version.clone(),
+        };
+        let response_spec = StatusResponseSpec {
+            response: status_spec,
+        };
+        if let Ok(_) = client
+            .lock()
+            .await
+            .write_packet(super::Packet::StatusResponse(response_spec))
+            .await
+        {
+            Ok(())
+        } else {
+            Err(())
+        }
     }
 }

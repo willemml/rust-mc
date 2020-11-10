@@ -1,5 +1,5 @@
 use super::{
-    net::{connection::ServerConnection, handler::PacketHandler},
+    net::{connection::MinecraftConnection, handler::PacketHandler},
     proto, Packet,
 };
 use anyhow::Result;
@@ -26,7 +26,7 @@ pub struct Client {
     /// The game profile that will be used to authenticate with the server.
     pub profile: crate::auth::Profile,
     /// When the client is connect this holds the actual connection to the server.
-    pub(crate) server: Option<ServerConnection>,
+    pub(crate) server: Option<MinecraftConnection>,
     /// Whether or not the client is currently connected to the server.
     connected: bool,
 }
@@ -82,13 +82,14 @@ impl Client {
     pub async fn connect(&mut self) -> Result<()> {
         let auth = self.profile.authenticate().await;
         if let Ok(_) = auth {
-            if let Ok(connection) = ServerConnection::connect_async(self.address).await {
+            if let Ok(connection) = MinecraftConnection::connect_async(self.address).await {
                 self.server = Some(connection);
                 if let Some(server) = &mut self.server {
                     if let Ok(_) = server
                         .handshake(
-                            proto::HandshakeNextState::Login,
-                            &self.profile.game_profile.name,
+                            Some(proto::HandshakeNextState::Login),
+                            None,
+                            Some(self.profile.game_profile.name.clone()),
                         )
                         .await
                     {

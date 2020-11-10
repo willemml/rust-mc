@@ -1,5 +1,7 @@
 /// Client for Minecraft servers.
 pub mod client;
+/// Minecraft server implementation
+pub mod server;
 /// Minecraft server status checking.
 pub mod status;
 /// Minecraft networking.

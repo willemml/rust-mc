@@ -5,7 +5,7 @@ pub mod minecraft;
 /// Mojang API implementation.
 pub mod mojang;
 
-pub use minecraft::client::Client;
+pub use minecraft::{server::Server, client::Client};
 pub use mojang::auth;
 
 use std::sync::Arc;
@@ -21,6 +21,8 @@ fn main() {
             status.description.to_traditional().unwrap().to_string()
         );
     }
+    let mut server = Server::new("127.0.0.1:25565".to_string());
+    server.start();
     tokio::runtime::Runtime::new()
         .unwrap()
         .block_on(async { async_main().await });

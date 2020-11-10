@@ -1,33 +1,44 @@
-use super::super::{proto, Packet, RawPacket};
+use super::super::{
+    proto::{self, HandshakeNextState, StatusResponseSpec},
+    Packet, RawPacket,
+};
 use anyhow::Result;
-use mcproto_rs::protocol::State;
+use mcproto_rs::{
+    protocol::{PacketDirection, State},
+    status::{StatusPlayersSpec, StatusSpec, StatusVersionSpec},
+    types::Chat,
+};
 use mctokio::{Bridge, TcpConnection, TcpReadBridge, TcpWriteBridge};
 use std::net::SocketAddr;
+use tokio::net::TcpStream;
 
 /// Represents a connection to a Mineceraft server.
-pub struct ServerConnection {
+pub struct MinecraftConnection {
     /// Read channel of the Server socket.
     reader: TcpReadBridge,
     /// Write channel of the Server socket.
     writer: TcpWriteBridge,
+    /// Where the packets are sent.
+    packet_direction: PacketDirection,
 }
 
-impl ServerConnection {
-    /// Returns a ServerConnection based on the given read/write channels.
-    /// It is highly recommended to use `connect` or `connect_async` instead.
+impl MinecraftConnection {
+    /// Returns a MinecraftConnection based on the given TcpConnection and packet direction..
+    /// It is highly recommended to use `connect` or `connect_async` instead if you are trying to connect to a server as a client and `from_tcp_stream` if you are accepting client connections as a server.
     ///
     /// # Arguments
     ///
-    /// * `reader` Read channel of a connected Socket.
-    /// * `writer` Write channel of a connected Socket.
+    /// * `connection` TcpConnection to the target (client or server).
+    /// * `packet_direction` Where packets are being sent (ServerBound if target is a server, or ClientBount if target is a client).
     ///
     /// # Examples
     ///
-    /// These examples require a Minecraft server to be running on localhost:25565.
+    /// This example creates a new MinecraftConnection to a server based on an existing TcpConnection, it requires a Minecraft server to be running on localhost:25565.
     ///
     /// ```rust
-    /// use rust_mc::minecraft::net::connection::ServerConnection;
+    /// use rust_mc::minecraft::net::connection::MinecraftConnection;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use mcproto_rs::protocol::PacketDirection;
     /// use futures::executor::block_on;
     /// use mctokio::TcpConnection;
     ///
@@ -36,31 +47,57 @@ impl ServerConnection {
     /// let connect = async {
     ///     let connection = TcpConnection::connect_to_server(address).await;
     ///
-    ///     let mut server_connection = ServerConnection::new(
-    ///         connection.writer,
-    ///         connection.reader
-    ///     );
+    ///     let mut server_connection = ServerConnection::new(connection, PacketDirection::ServerBound);
     /// };
     ///
     /// block_on(connect);
     /// ```
-    pub fn new(reader: TcpReadBridge, writer: TcpWriteBridge) -> Self {
-        return Self { reader, writer };
+    ///
+    /// This example creates a new MinecraftConnection to a client based on an existing TcpConnection.
+    ///
+    /// ```rust
+    /// use rust_mc::minecraft::net::connection::MinecraftConnection;
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use mcproto_rs::protocol::PacketDirection;
+    /// use futures::executor::block_on;
+    /// use mctokio::TcpConnection;
+    ///
+    /// let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
+    ///
+    /// let connect = async {
+    ///     let mut listener = TcpListener::bind(address).await;
+    ///     if let Ok(listener) = &mut listener {
+    ///         loop {
+    ///             if let Ok((socket, address)) = listener.accept().await {
+    ///                let mut client_connection = MinecraftConnection::new(TcpConnection::from_client_connection(socket), PacketDirection::ClientBound);
+    ///            }
+    ///         }
+    ///     }
+    /// };
+    ///
+    /// block_on(connect);
+    /// ```
+    pub fn new(connection: TcpConnection, packet_direction: PacketDirection) -> Self {
+        return Self {
+            reader: connection.reader,
+            writer: connection.writer,
+            packet_direction,
+        };
     }
 
-    /// Returns a ServerConnection based on the given TcpConnection.
-    /// It is highly recommended to use `connect` or `connect_async` instead.
+    /// Returns a MinecraftConnection to a client based on the given TcpStream.
+    /// This method is only for servers to use when a client connects.
     ///
     /// # Arguments
     ///
-    /// * `connection` TcpConnection to use.
+    /// * `connection` TcpStream from the client's connection.
     ///
     /// # Examples
     ///
-    /// This example require a Minecraft server to be running on localhost:25565.
+    /// This example creates a new MinecraftConnection to a client based on an existing TcpStream.
     ///
     /// ```rust
-    /// use rust_mc::minecraft::net::connection::ServerConnection;
+    /// use rust_mc::minecraft::net::connection::MinecraftConnection;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     /// use futures::executor::block_on;
     /// use mctokio::TcpConnection;
@@ -68,18 +105,26 @@ impl ServerConnection {
     /// let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
     ///
     /// let connect = async {
-    ///     let connection = TcpConnection::connect_to_server(address).await;
-    ///
-    ///     let mut server_connection = ServerConnection::from_tcp_connection(connection);
+    ///     let mut listener = TcpListener::bind(address).await;
+    ///     if let Ok(listener) = &mut listener {
+    ///         loop {
+    ///             if let Ok((socket, address)) = listener.accept().await {
+    ///                let mut client_connection = MinecraftConnection::from_tcp_stream(socket);
+    ///            }
+    ///         }
+    ///     }
     /// };
     ///
     /// block_on(connect);
     /// ```
-    pub fn from_tcp_connection(connection: TcpConnection) -> Self {
-        Self::new(connection.reader, connection.writer)
+    pub fn from_tcp_stream(connection: TcpStream) -> Self {
+        Self::new(
+            TcpConnection::from_client_connection(connection),
+            PacketDirection::ClientBound,
+        )
     }
 
-    /// Returns a ServerConnection based on the given read/write channels.
+    /// Returns a MinecraftConnection to a server based on the given read/write channels.
     ///
     /// # Arguments
     ///
@@ -88,7 +133,7 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
-    /// This example require a Minecraft server to be running on localhost:25565.
+    /// This example requires a Minecraft server to be running on localhost:25565.
     ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
@@ -108,13 +153,13 @@ impl ServerConnection {
     pub async fn connect_async(address: SocketAddr) -> Result<Self, std::io::Error> {
         let connection = TcpConnection::connect_to_server(address).await;
         if let Ok(connected) = connection {
-            Ok(ServerConnection::from_tcp_connection(connected))
+            Ok(Self::new(connected, PacketDirection::ServerBound))
         } else {
             Err(connection.err().unwrap())
         }
     }
 
-    /// Connects to a server socket and returns a ServerConnection based on that connection.
+    /// Connects to a server socket and returns a MinecraftConnection based on that connection.
     ///
     /// # Arguments
     ///
@@ -122,7 +167,7 @@ impl ServerConnection {
     ///
     /// # Examples
     ///
-    /// This example require a Minecraft server to be running on localhost:25565.
+    /// This example requires a Minecraft server to be running on localhost:25565.
     ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
@@ -144,14 +189,41 @@ impl ServerConnection {
     ///
     /// # Arguments
     ///
-    /// * `next_state` The state to enter after Handshake.
-    /// * `name` The name of the player connecting, can be blank if `next_state` is Status.
+    /// * `next_state` The state to enter after Handshake, should be None when called by a server.
+    /// * `status` The status that should be sent by a connection client, should be None when called by a client.
+    /// * `name` The name of the player connecting, can be `None` if `next_state` is Status.
     ///
     /// # Examples
     ///
-    /// These examples require a Minecraft server to be running on localhost:25565.
+    /// This example is for handling incoming connections to a server.
     ///
-    /// When you are trying to get the status of the server:
+    /// ```rust
+    /// use rust_mc::minecraft::net::connection::MinecraftConnection;
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use futures::executor::block_on;
+    /// use mctokio::TcpConnection;
+    ///
+    /// let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
+    ///
+    /// let connect = async {
+    ///     let mut listener = TcpListener::bind(address).await;
+    ///     if let Ok(listener) = &mut listener {
+    ///         loop {
+    ///             if let Ok((socket, address)) = listener.accept().await {
+    ///                 let mut client_connection = MinecraftConnection::from_tcp_stream(socket);
+    ///                 client_connection.handshake(None, None, None).await;
+    ///            }
+    ///         }
+    ///     }
+    /// };
+    ///
+    /// block_on(connect);
+    /// ```
+    ///
+    /// These examples are for clients and require a Minecraft server to be running on localhost:25565.
+    ///
+    /// When you are trying to get the status of a server:
+    ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
     /// use rust_mc::minecraft::proto::HandshakeNextState::Status;
@@ -164,17 +236,18 @@ impl ServerConnection {
     ///     let mut connection = ServerConnection::connect_async(address).await;
     ///
     ///     if let Ok(server) = &mut connection {
-    ///         let handshake = server.handshake(Status, &"".to_string()).await; // Note the empty string here as this is a "status" handshake.
+    ///         let handshake = server.handshake(Status, None, None).await; // Note the usage of `None` here as this is a "status" handshake.
     ///         if let Ok(_) = &handshake {
     ///             // Do stuff on Handshake success here
     ///         };
     ///     };
     /// };
-    ///
+    ///s
     /// block_on(status_handshake);
     /// ```
     ///
-    /// When you are trying to login to the server:
+    /// When you are trying to login to a server:
+    ///
     /// ```rust
     /// use rust_mc::minecraft::net::connection::ServerConnection;
     /// use rust_mc::minecraft::proto::HandshakeNextState::Login;
@@ -187,7 +260,7 @@ impl ServerConnection {
     ///     let mut connection = ServerConnection::connect_async(address).await;
     ///
     ///     if let Ok(server) = &mut connection {
-    ///         let handshake = server.handshake(Login, &"test_player".to_string()).await; // Note the string with a username here as this is a "login" handshake.
+    ///         let handshake = server.handshake(Login, None, Some("test_player".to_string())).await; // Note the string with a username here as this is a "login" handshake.
     ///         if let Ok(_) = &handshake {
     ///             // Do stuff on Handshake success here
     ///         };
@@ -198,42 +271,101 @@ impl ServerConnection {
     /// ```
     pub async fn handshake(
         &mut self,
-        next_state: proto::HandshakeNextState,
-        name: &String,
+        next_state: Option<proto::HandshakeNextState>,
+        status: Option<StatusSpec>,
+        name: Option<String>,
     ) -> anyhow::Result<()> {
-        let handshake = proto::HandshakeSpec {
-            version: mcproto_rs::types::VarInt::from(753),
-            server_address: "".to_string(),
-            server_port: 25565,
-            next_state: next_state.clone(),
-        };
-        if let Err(error) = self.write_packet(Packet::Handshake(handshake)).await {
-            return Err(error);
-        } else {
-            if next_state == proto::HandshakeNextState::Status {
-                self.set_state(State::Status);
-                if let Err(error) = self
-                    .write_packet(Packet::StatusRequest(proto::StatusRequestSpec {}))
-                    .await
-                {
-                    return Err(error);
+        if self.packet_direction == PacketDirection::ClientBound {
+            let first = self.read_next_packet().await;
+            if let Ok(first) = first {
+                if let Some(Packet::Handshake(body)) = first {
+                    match body.next_state {
+                        HandshakeNextState::Status => {
+                            let second = self.read_next_packet().await;
+                            if let Ok(second) = second {
+                                if let Some(Packet::StatusRequest(_)) = second {
+                                    let status = if let Some(status_spec) = status {
+                                        status_spec
+                                    } else {
+                                        StatusSpec {
+                                        description: Chat::from_text("rust-mc, a Minecraft server and client written in rust!"),
+                                        version: StatusVersionSpec {
+                                            name: "1.16.3".to_string(),
+                                            protocol: 753
+                                        },
+                                        players: StatusPlayersSpec {
+                                            max: 20,
+                                            online: 10,
+                                            sample: Vec::default()
+                                        },
+                                        favicon: None,
+                                    }
+                                    };
+                                    let response_spec = StatusResponseSpec { response: status };
+                                    if let Err(error) = self
+                                        .write_packet(Packet::StatusResponse(response_spec))
+                                        .await
+                                    {
+                                        return Err(error);
+                                    }
+                                }
+                            } else {
+                                return Err(second.err().unwrap());
+                            }
+                        }
+                        HandshakeNextState::Login => {}
+                    }
                 }
             } else {
-                self.set_state(State::Login);
-                if let Err(error) = self
-                    .write_packet(Packet::LoginStart(proto::LoginStartSpec {
-                        name: name.clone(),
-                    }))
-                    .await
-                {
+                return Err(first.err().unwrap());
+            }
+        } else {
+            if let Some(next_state) = next_state {
+                let handshake = proto::HandshakeSpec {
+                    version: mcproto_rs::types::VarInt::from(753),
+                    server_address: "".to_string(),
+                    server_port: 25565,
+                    next_state: next_state.clone(),
+                };
+                if let Err(error) = self.write_packet(Packet::Handshake(handshake)).await {
                     return Err(error);
+                } else {
+                    if next_state == proto::HandshakeNextState::Status {
+                        self.set_state(State::Status);
+                        if let Err(error) = self
+                            .write_packet(Packet::StatusRequest(proto::StatusRequestSpec {}))
+                            .await
+                        {
+                            return Err(error);
+                        }
+                    } else {
+                        self.set_state(State::Login);
+                        if let Some(name) = name {
+                            if let Err(error) = self
+                                .write_packet(Packet::LoginStart(proto::LoginStartSpec {
+                                    name: name.clone(),
+                                }))
+                                .await
+                            {
+                                return Err(error);
+                            }
+                        } else {
+                            return Err(anyhow::anyhow!(
+                                "Username cannot be empty when next_state is Login."
+                            ));
+                        }
+                    }
                 }
-            };
-            return Ok(());
-        };
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Cannot handshake as a client without specifying what the next state is."
+                ));
+            }
+        }
+        return Ok(());
     }
 
-    /// Sends a packet to the server
+    /// Sends a packet to the target.
     ///
     /// # Arguments
     ///
@@ -267,6 +399,40 @@ impl ServerConnection {
     /// ```
     pub async fn write_packet(&mut self, packet: Packet) -> Result<()> {
         self.writer.write_packet(packet).await
+    }
+
+    /// Reads the next packet from the buffer of packets received from the target.
+    ///
+    /// # Examples
+    ///
+    /// This example require a Minecraft server to be running on localhost:25565.
+    ///
+    /// ```rust
+    /// use rust_mc::minecraft::net::connection::ServerConnection;
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use futures::executor::block_on;
+    ///
+    /// let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
+    ///
+    /// let set_compression_threshold = async {
+    ///     let mut connection = ServerConnection::connect_async(address).await;
+    ///
+    ///     if let Ok(server) = &mut connection {
+    ///         let packet = server.read_next_packet().await;
+    ///         if let Ok(packet) = packet {
+    ///             // Do stuff with packet here.
+    ///         }
+    ///     };
+    /// };
+    ///
+    /// block_on(set_compression_threshold);
+    /// ```
+    pub async fn read_next_packet(&mut self) -> Result<Option<Packet>> {
+        if let Some(raw) = self.reader.read_packet::<RawPacket>().await? {
+            Ok(Some(mcproto_rs::protocol::RawPacket::deserialize(&raw)?))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Sets the state of the connection.
@@ -370,39 +536,5 @@ impl ServerConnection {
     pub fn set_compression_threshold(&mut self, threshold: i32) {
         self.reader.set_compression_threshold(Some(threshold));
         self.writer.set_compression_threshold(Some(threshold));
-    }
-
-    /// Reads the next packet from the buffer of packets received from the server
-    ///
-    /// # Examples
-    ///
-    /// This example require a Minecraft server to be running on localhost:25565.
-    ///
-    /// ```rust
-    /// use rust_mc::minecraft::net::connection::ServerConnection;
-    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    /// use futures::executor::block_on;
-    ///
-    /// let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
-    ///
-    /// let set_compression_threshold = async {
-    ///     let mut connection = ServerConnection::connect_async(address).await;
-    ///
-    ///     if let Ok(server) = &mut connection {
-    ///         let packet = server.read_next_packet().await;
-    ///         if let Ok(packet) = packet {
-    ///             // Do stuff with packet here.
-    ///         }
-    ///     };
-    /// };
-    ///
-    /// block_on(set_compression_threshold);
-    /// ```
-    pub async fn read_next_packet(&mut self) -> Result<Option<Packet>> {
-        if let Some(raw) = self.reader.read_packet::<RawPacket>().await? {
-            Ok(Some(mcproto_rs::protocol::RawPacket::deserialize(&raw)?))
-        } else {
-            Ok(None)
-        }
     }
 }
