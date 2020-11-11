@@ -2,6 +2,7 @@ use anyhow::Result;
 use mcproto_rs::uuid::UUID4;
 use serde::{Deserialize, Serialize};
 
+const HAS_JOINED_SERVER_URL: &str = "https://sessionserver.mojang.com/session/minecraft/hasJoined";
 const JOIN_SERVER_URL: &str = "https://sessionserver.mojang.com/session/minecraft/join";
 const AUTHENTICATE_URL: &str = "https://authserver.mojang.com/authenticate";
 const INVALIDATE_URL: &str = "https://authserver.mojang.com/invalidate";
@@ -139,7 +140,7 @@ impl Profile {
         } else {
             let validate_payload = ClientAccessTokenPayload {
                 accessToken: self.access_token.clone(),
-                clientToken: self.client_token.clone()
+                clientToken: self.client_token.clone(),
             };
             if let Ok(json) = serde_json::to_string(&validate_payload) {
                 let result = super::http_post_json(VALIDATE_URL, json).await;
@@ -179,7 +180,7 @@ impl Profile {
         } else {
             let invalidate_payload = ClientAccessTokenPayload {
                 accessToken: self.access_token.clone(),
-                clientToken: self.client_token.clone()
+                clientToken: self.client_token.clone(),
             };
             if let Ok(json) = serde_json::to_string(&invalidate_payload) {
                 if let Ok(_) = super::http_post_json(INVALIDATE_URL, json).await {
@@ -212,7 +213,7 @@ impl Profile {
         } else {
             let signout_payload = SignoutPayload {
                 username: self.username.clone(),
-                password: self.password.clone()
+                password: self.password.clone(),
             };
             if let Ok(json) = serde_json::to_string(&signout_payload) {
                 if let Ok(_) = super::http_post_json(SIGNOUT_URL, json).await {
@@ -246,12 +247,14 @@ impl Profile {
             if !(self.client_token.is_empty() && self.access_token.is_empty()) {
                 let signout_payload = ClientAccessTokenPayload {
                     accessToken: self.access_token.clone(),
-                    clientToken: self.client_token.clone()
+                    clientToken: self.client_token.clone(),
                 };
                 if let Ok(json) = serde_json::to_string(&signout_payload) {
                     if let Ok(response) = super::http_post_json(REFRESH_URL, json).await {
                         if let Ok(text) = response.text().await {
-                            if let Ok(refresh) = serde_json::from_str::<RefreshResponse>(text.as_str()) {
+                            if let Ok(refresh) =
+                                serde_json::from_str::<RefreshResponse>(text.as_str())
+                            {
                                 self.access_token = refresh.accessToken;
                                 self.client_token = refresh.clientToken;
                                 Ok(())
@@ -268,7 +271,9 @@ impl Profile {
                     Err(anyhow::anyhow!("Failed to serialize request."))
                 }
             } else {
-                Err(anyhow::anyhow!("Cannot refresh without a client token and an access token."))
+                Err(anyhow::anyhow!(
+                    "Cannot refresh without a client token and an access token."
+                ))
             }
         }
     }
@@ -293,7 +298,12 @@ impl Profile {
     ///
     /// block_on(profile.join_server(server_id));
     /// ```
-    pub async fn join_server(&self, server_id: String) -> Result<()> {
+    pub async fn join_server(
+        &self,
+        server_id: String,
+        shared_secret: &[u8],
+        public_key: &[u8],
+    ) -> Result<()> {
         if self.offline {
             return Err(anyhow::anyhow!(
                 "Cannot join online-mode server with offline account."
@@ -303,7 +313,7 @@ impl Profile {
             let join_request = JoinRequest {
                 accessToken: self.access_token.clone(),
                 selectedProfile: self.game_profile.id.to_string().replace("-", ""),
-                serverId: super::hash::calc_hash(&server_id),
+                serverId: super::hash::calc_hash(&server_id, shared_secret, public_key),
             };
             if let Ok(json) = serde_json::to_string(&join_request) {
                 let result = super::http_post_json(JOIN_SERVER_URL, json).await;
@@ -323,6 +333,29 @@ impl Profile {
             Err(anyhow::anyhow!("Not authenticated."))
         }
     }
+}
+
+pub async fn verify_join(
+    username: &str,
+    server_id: String,
+    shared_secret: &[u8],
+    public_key: &[u8],
+) -> Result<(String, UUID4)> {
+    let client = reqwest::Client::new();
+    let response = client
+        .get((HAS_JOINED_SERVER_URL.to_owned() + "?username=" + username + "&serverId=" + super::hash::calc_hash(&server_id, shared_secret, public_key).as_str()).as_str())
+        .send()
+        .await;
+    if let Ok(response) = response {
+        if let Ok(text) = response.text().await {
+            if let Ok(join) = serde_json::from_str::<ServerJoinResponse>(&text) {
+                return Ok((join.name, join.id));
+            }
+            return Err(anyhow::anyhow!("Bad response."))
+        }
+        return Err(anyhow::anyhow!("Empty response."))
+    };
+    return Err(anyhow::anyhow!("Failed to send request."))
 }
 
 /// Minecraft player ID data.
@@ -386,4 +419,10 @@ struct JoinRequest {
     accessToken: String,
     selectedProfile: String,
     serverId: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ServerJoinResponse {
+    id: UUID4,
+    name: String,
 }

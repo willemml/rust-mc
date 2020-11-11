@@ -9,19 +9,26 @@ use proto::ChatPosition;
 
 /// Represents a Minecraft server.
 pub struct Server {
-    connections: Arc<Mutex<Vec<Arc<ServerClient>>>>,
+    /// Clients that have connected.
+    players: Arc<Mutex<Vec<Arc<ServerClient>>>>,
+    /// Address to bind the listener to.
     bind_address: String,
+    /// Whether or not to make sure players have authenticated with Mojang, also enables packet encryption.
+    online: bool,
+    /// The server's status.
     status: Option<StatusSpec>,
+    /// Runtime for threads/async work.
     runtime: Runtime,
 }
 
 impl Server {
     /// Create a new server based on an address.
-    pub fn new(bind_address: String) -> Self {
+    pub fn new(bind_address: String, online: bool) -> Self {
         Server {
-            connections: Arc::new(Mutex::new(vec![])),
+            players: Arc::new(Mutex::new(vec![])),
             bind_address,
             status: None,
+            online,
             runtime: Runtime::new().unwrap(),
         }
     }
@@ -29,7 +36,7 @@ impl Server {
     /// Starts listening for tcp connections on `self.bind_address`.
     /// When a client connects the server performs the login sequence.
     pub async fn start(self) -> Arc<Mutex<Self>> {
-        let connections = self.connections.clone();
+        let connections = self.players.clone();
         let address = self.bind_address.clone();
         let mut listener = TcpListener::bind(address).await;
         let self_mutex = Arc::new(Mutex::new(self));
@@ -61,7 +68,7 @@ impl Server {
                                     let server_client = Arc::new(ServerClient {
                                         name: login.0,
                                         uuid: login.1,
-                                        connection: client_arc.clone()
+                                        connection: client_arc.clone(),
                                     });
                                     let server_client_arc = server_client.clone();
                                     let self_loop_arc = self_join_arc.clone();
@@ -83,7 +90,10 @@ impl Server {
                                                     server_arc
                                                         .lock()
                                                         .await
-                                                        .handle_packet(packet, server_client_arc.clone())
+                                                        .handle_packet(
+                                                            packet,
+                                                            server_client_arc.clone(),
+                                                        )
                                                         .await;
                                                 }
                                             };
@@ -134,14 +144,60 @@ impl Server {
         client_mutex: Arc<Mutex<MinecraftConnection>>,
         compression_threshold: i32,
     ) -> Result<(String, UUID4)> {
-        use super::Packet::{LoginSetCompression, LoginStart, LoginSuccess};
+        use super::Packet::{
+            LoginEncryptionRequest, LoginSetCompression, LoginStart, LoginSuccess, LoginEncryptionResponse
+        };
         use mcproto_rs::protocol::State::Play;
-        use proto::{LoginSetCompressionSpec, LoginSuccessSpec};
+        use mcproto_rs::types::CountedArray;
+        use crate::mojang::auth;
+        use proto::{LoginEncryptionRequestSpec, LoginSetCompressionSpec, LoginSuccessSpec};
         let client = &mut client_mutex.lock().await;
         let second = &mut client.read_next_packet().await;
         if let Ok(Some(LoginStart(body))) = second {
             let response_spec = LoginSetCompressionSpec {
                 threshold: mcproto_rs::types::VarInt::from(compression_threshold),
+            };
+            let mut result = (body.name.clone(), UUID4::random());
+            if self.online {
+                let server_id = "                  ".to_string();
+                let public_key: &mut [u8] = &mut [0; 128];
+                for mut _i in public_key.iter() {
+                    _i = &rand::random::<u8>();
+                }
+                let verify_token: &mut [u8] = &mut [0; 16];
+                for mut _i in verify_token.iter() {
+                    _i = &rand::random::<u8>();
+                }
+                let encryption_spec = LoginEncryptionRequestSpec {
+                    server_id: server_id.clone(),
+                    public_key: CountedArray::from(public_key.to_vec()),
+                    verify_token: CountedArray::from(verify_token.to_vec()),
+                };
+                if let Err(error) = client
+                    .write_packet(LoginEncryptionRequest(encryption_spec))
+                    .await
+                {
+                    return Err(error);
+                } else {
+                    let response = client.read_next_packet().await;
+                    if let Ok(Some(LoginEncryptionResponse(response))) = response {
+                        if response.verify_token == CountedArray::from(verify_token.to_vec()) {
+                            if let Ok(verified) = auth::verify_join(&body.name, server_id, &response.shared_secret, public_key).await {
+                                result = verified;
+                            } else {
+                                return Err(anyhow::anyhow!("Client verification failed."))
+                            }
+                        } else {
+                            return Err(anyhow::anyhow!("Client verification failed."))
+                        }
+                    } else {
+                        if response.is_err() {
+                            return Err(response.err().unwrap());
+                        } else {
+                            return Err(anyhow::anyhow!("Client did not send the correct response to encryption request."))
+                        }
+                    }
+                }
             };
             if let Err(error) = client
                 .write_packet(LoginSetCompression(response_spec))
@@ -151,7 +207,6 @@ impl Server {
             } else {
                 client.set_compression_threshold(compression_threshold);
             }
-            let result = (body.name.clone(), UUID4::random());
             if let Err(error) = client
                 .write_packet(LoginSuccess(LoginSuccessSpec {
                     username: result.0.clone(),
@@ -261,7 +316,7 @@ impl Server {
 
     #[allow(unused_must_use)]
     pub async fn broadcast_chat(&mut self, message: Chat) {
-        for player in self.connections.clone().lock().await.iter() {
+        for player in self.players.clone().lock().await.iter() {
             Self::send_chat_message(player.connection.lock().await, message.clone()).await;
         }
     }
@@ -270,8 +325,11 @@ impl Server {
     async fn handle_packet(&mut self, packet: Packet, sender: Arc<ServerClient>) {
         match packet {
             Packet::PlayClientChatMessage(body) => {
-                self.broadcast_chat(Chat::from_traditional(&("<".to_owned() + sender.name.as_str() + "> " + body.message.as_str()), true))
-                    .await;
+                self.broadcast_chat(Chat::from_traditional(
+                    &("<".to_owned() + sender.name.as_str() + "> " + body.message.as_str()),
+                    true,
+                ))
+                .await;
             }
             _ => {}
         }

@@ -13,9 +13,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
 fn main() {
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let mut runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.spawn(async { Server::new("127.0.0.1:25565".to_string()).start().await });
+    let runtime_one = tokio::runtime::Runtime::new().unwrap();
+    let mut runtime_two = tokio::runtime::Runtime::new().unwrap();
+    let runtime_three = tokio::runtime::Runtime::new().unwrap();
+    runtime_one.spawn(Server::new("127.0.0.1:25565".to_string(), false).start());
     let status_checker =
         minecraft::status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
     if let Ok(status) = status_checker.get_status_sync() {
@@ -24,7 +25,8 @@ fn main() {
             status.description.to_traditional().unwrap().to_string()
         );
     }
-    runtime.block_on(async_main(tokio::runtime::Runtime::new().unwrap()));
+    runtime_two.block_on(async_main(runtime_three));
+    loop {}
 }
 
 async fn async_main(runtime: tokio::runtime::Runtime) {
@@ -50,6 +52,6 @@ async fn async_main(runtime: tokio::runtime::Runtime) {
             }
         }
     } else {
-        println!("test_player failed to connect, {}", connect.err().unwrap())
+        println!("test_player failed to connect: {}", connect.err().unwrap())
     }
 }

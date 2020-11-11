@@ -309,7 +309,7 @@ impl Client {
                 shared_secret: CountedArray::from(buf.to_vec()),
                 verify_token: spec.verify_token.clone(),
             };
-            let auth = self.profile.join_server(spec.server_id).await;
+            let auth = self.profile.join_server(spec.server_id, buf, key).await;
             if let Ok(_) = auth {
                 let respond = server
                     .write_packet(Packet::LoginEncryptionResponse(response_spec))
