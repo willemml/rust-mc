@@ -1,15 +1,9 @@
 use super::super::{
-    proto::{self, HandshakeNextState, StatusResponseSpec},
+    proto::{self, HandshakeNextState},
     Packet, RawPacket,
 };
 use anyhow::Result;
-use mcproto_rs::{
-    protocol::{PacketDirection, State},
-    status::{StatusPlayersSpec, StatusSpec, StatusVersionSpec},
-    types::Chat,
-    types::VarInt,
-    uuid::UUID4,
-};
+use mcproto_rs::protocol::{PacketDirection, State};
 use mctokio::{Bridge, TcpConnection, TcpReadBridge, TcpWriteBridge};
 use std::net::SocketAddr;
 use tokio::net::TcpStream;
@@ -283,11 +277,11 @@ impl MinecraftConnection {
                     match body.next_state {
                         HandshakeNextState::Status => {
                             self.set_state(State::Status);
-                            return Ok(State::Status)
+                            return Ok(State::Status);
                         }
                         HandshakeNextState::Login => {
                             self.set_state(State::Login);
-                            return Ok(State::Login)
+                            return Ok(State::Login);
                         }
                     }
                 } else {
