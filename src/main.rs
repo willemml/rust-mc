@@ -24,13 +24,10 @@ fn main() {
             status.description.to_traditional().unwrap().to_string()
         );
     }
-    runtime.block_on(async { async_main().await });
-    loop {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    runtime.block_on(async_main(tokio::runtime::Runtime::new().unwrap()));
 }
 
-async fn async_main() {
+async fn async_main(runtime: tokio::runtime::Runtime) {
     let mut client = Client::new(
         SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
         auth::Profile::new("test_player", "", true),
@@ -41,7 +38,7 @@ async fn async_main() {
     let (_tx, rx) = mpsc::channel(20);
     if let Ok(_) = connect {
         println!("Successfully connected to localhost:25565");
-        Client::start_loop(client_other, rx);
+        runtime.spawn(Client::start_loop(client_other, rx));
         let mut buffer = String::new();
         let stdin = std::io::stdin();
         loop {

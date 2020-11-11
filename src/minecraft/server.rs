@@ -2,20 +2,21 @@ use std::sync::Arc;
 
 use tokio::{net::TcpListener, runtime::Runtime, sync::Mutex};
 
-use super::net::connection::MinecraftConnection;
-use super::proto;
+use super::{net::connection::MinecraftConnection, proto, Packet};
 use anyhow::Result;
-use mcproto_rs::uuid::UUID4;
-use mcproto_rs::{status::StatusSpec, types::Chat};
+use mcproto_rs::{status::StatusSpec, types::Chat, uuid::UUID4};
+use proto::ChatPosition;
 
+/// Represents a Minecraft server.
 pub struct Server {
-    connections: Arc<Mutex<Vec<Arc<Mutex<MinecraftConnection>>>>>,
+    connections: Arc<Mutex<Vec<Arc<ServerClient>>>>,
     bind_address: String,
     status: Option<StatusSpec>,
     runtime: Runtime,
 }
 
 impl Server {
+    /// Create a new server based on an address.
     pub fn new(bind_address: String) -> Self {
         Server {
             connections: Arc::new(Mutex::new(vec![])),
@@ -35,10 +36,9 @@ impl Server {
         if let Ok(listener) = &mut listener {
             loop {
                 if let Ok((socket, address)) = listener.accept().await {
-                    let self_join_mutex = self_mutex.clone();
+                    let self_join_arc = self_mutex.clone();
                     let connections = connections.clone();
                     let join = async move {
-                        let server = &mut self_join_mutex.lock().await;
                         let mut client = MinecraftConnection::from_tcp_stream(socket);
                         let handshake = client.handshake(None, None).await;
                         let client_arc = Arc::new(Mutex::new(client));
@@ -49,23 +49,68 @@ impl Server {
                                 address.to_string()
                             );
                             if result == mcproto_rs::protocol::State::Login {
-                                if let Ok(_) = server.handle_login(client_arc.clone(), 256).await {
+                                let login: Result<(String, UUID4)>;
+                                {
+                                    login = self_join_arc
+                                        .lock()
+                                        .await
+                                        .handle_login(client_arc.clone(), 256)
+                                        .await;
+                                }
+                                if let Ok(login) = login {
+                                    let server_client = Arc::new(ServerClient {
+                                        name: login.0,
+                                        uuid: login.1,
+                                        connection: client_arc.clone()
+                                    });
+                                    let server_client_arc = server_client.clone();
+                                    let self_loop_arc = self_join_arc.clone();
+                                    let client_loop_arc = client_arc.clone();
+                                    let packet_loop = async move {
+                                        let client_arc = client_loop_arc.clone();
+                                        let server_arc = self_loop_arc.clone();
+                                        loop {
+                                            let packet_read: Result<Option<super::Packet>>;
+                                            {
+                                                packet_read = client_arc
+                                                    .lock()
+                                                    .await
+                                                    .read_next_packet()
+                                                    .await;
+                                            }
+                                            if let Ok(packet_ok) = packet_read {
+                                                if let Some(packet) = packet_ok {
+                                                    server_arc
+                                                        .lock()
+                                                        .await
+                                                        .handle_packet(packet, server_client_arc.clone())
+                                                        .await;
+                                                }
+                                            };
+                                        }
+                                    };
+                                    self_join_arc.lock().await.runtime.spawn(packet_loop);
+                                    connections.lock().await.push(server_client);
                                     println!("{} successfully logged in.", address.to_string());
-                                    connections.lock().await.push(client_arc);
                                 } else {
                                     println!("{} failed to log in.", address.to_string())
                                 }
                             } else {
-                                if let Ok(_) = server.handle_status(client_arc.clone()).await {
+                                let status: Result<()>;
+                                {
+                                    status = self_join_arc
+                                        .lock()
+                                        .await
+                                        .handle_status(client_arc.clone())
+                                        .await;
+                                }
+                                if let Ok(_) = status {
                                     println!(
                                         "{} successfully got server status.",
                                         address.to_string()
                                     )
                                 } else {
-                                    println!(
-                                        "{} failed to lget server status.",
-                                        address.to_string()
-                                    )
+                                    println!("{} failed to get server status.", address.to_string())
                                 }
                             }
                         } else {
@@ -83,39 +128,41 @@ impl Server {
         self_mutex
     }
 
-    pub async fn handle_login(
+    /// Handle client login.
+    async fn handle_login(
         &mut self,
         client_mutex: Arc<Mutex<MinecraftConnection>>,
         compression_threshold: i32,
-    ) -> Result<()> {
+    ) -> Result<(String, UUID4)> {
         use super::Packet::{LoginSetCompression, LoginStart, LoginSuccess};
+        use mcproto_rs::protocol::State::Play;
         use proto::{LoginSetCompressionSpec, LoginSuccessSpec};
         let client = &mut client_mutex.lock().await;
         let second = &mut client.read_next_packet().await;
-        if let Ok(second) = second {
-            if let Some(LoginStart(body)) = second {
-                let response_spec = LoginSetCompressionSpec {
-                    threshold: mcproto_rs::types::VarInt::from(compression_threshold),
-                };
-                if let Err(error) = client
-                    .write_packet(LoginSetCompression(response_spec))
-                    .await
-                {
-                    return Err(error);
-                } else {
-                    client.set_compression_threshold(compression_threshold);
-                }
-                if let Err(error) = client
-                    .write_packet(LoginSuccess(LoginSuccessSpec {
-                        username: body.name.clone(),
-                        uuid: UUID4::random(),
-                    }))
-                    .await
-                {
-                    return Err(error);
-                }
+        if let Ok(Some(LoginStart(body))) = second {
+            let response_spec = LoginSetCompressionSpec {
+                threshold: mcproto_rs::types::VarInt::from(compression_threshold),
+            };
+            if let Err(error) = client
+                .write_packet(LoginSetCompression(response_spec))
+                .await
+            {
+                return Err(error);
+            } else {
+                client.set_compression_threshold(compression_threshold);
             }
-            return Ok(());
+            let result = (body.name.clone(), UUID4::random());
+            if let Err(error) = client
+                .write_packet(LoginSuccess(LoginSuccessSpec {
+                    username: result.0.clone(),
+                    uuid: result.1.clone(),
+                }))
+                .await
+            {
+                return Err(error);
+            }
+            client.set_state(Play);
+            return Ok(result);
         } else {
             return Err(anyhow::anyhow!(
                 "Client did not follow up with status request."
@@ -123,7 +170,8 @@ impl Server {
         }
     }
 
-    pub async fn handle_status(
+    /// Handle status requests by a client.
+    async fn handle_status(
         &mut self,
         client_mutex: Arc<Mutex<MinecraftConnection>>,
     ) -> anyhow::Result<()> {
@@ -185,4 +233,53 @@ impl Server {
             ));
         }
     }
+
+    /// Send a chat message to a client.
+    pub async fn send_chat_message(
+        connection: tokio::sync::MutexGuard<'_, MinecraftConnection>,
+        message: Chat,
+    ) -> Result<()> {
+        Self::send_message(connection, message, ChatPosition::ChatBox).await
+    }
+
+    /// Send a message to a client (can be sent to multiple locations on client screen).
+    pub async fn send_message(
+        mut connection: tokio::sync::MutexGuard<'_, MinecraftConnection>,
+        message: Chat,
+        position: ChatPosition,
+    ) -> Result<()> {
+        use super::Packet::PlayServerChatMessage;
+        use proto::PlayServerChatMessageSpec;
+        let spec = PlayServerChatMessageSpec {
+            message,
+            sender: UUID4::random(),
+            position,
+        };
+        let packet = PlayServerChatMessage(spec);
+        connection.write_packet(packet).await
+    }
+
+    #[allow(unused_must_use)]
+    pub async fn broadcast_chat(&mut self, message: Chat) {
+        for player in self.connections.clone().lock().await.iter() {
+            Self::send_chat_message(player.connection.lock().await, message.clone()).await;
+        }
+    }
+
+    /// Handle packets sent by connected clients.
+    async fn handle_packet(&mut self, packet: Packet, sender: Arc<ServerClient>) {
+        match packet {
+            Packet::PlayClientChatMessage(body) => {
+                self.broadcast_chat(Chat::from_traditional(&("<".to_owned() + sender.name.as_str() + "> " + body.message.as_str()), true))
+                    .await;
+            }
+            _ => {}
+        }
+    }
+}
+
+struct ServerClient {
+    name: String,
+    uuid: UUID4,
+    connection: Arc<Mutex<MinecraftConnection>>,
 }

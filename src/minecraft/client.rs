@@ -1,8 +1,6 @@
-use super::{
-    net::{connection::MinecraftConnection, handler::PacketHandler},
-    proto, Packet,
-};
+use super::{net::connection::MinecraftConnection, proto, Packet};
 use anyhow::Result;
+use futures::pin_mut;
 use mcproto_rs::{protocol::State, types::CountedArray};
 use std::net::SocketAddr;
 
@@ -11,8 +9,6 @@ use tokio::sync::{
     mpsc::{error::TryRecvError, Receiver},
     Mutex,
 };
-
-use std::thread::{spawn, JoinHandle};
 
 /// Error text when the client is not connected to a server.
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
@@ -168,30 +164,32 @@ impl Client {
     ///
     /// tx.try_send(()); // Stop the packet read loop.
     /// ```
-    pub fn start_loop(client: Arc<Mutex<Self>>, receiver: Receiver<()>) -> JoinHandle<()> {
-        spawn(move || futures::executor::block_on(Self::packet_loop(client, receiver)))
-    }
-
-    async fn packet_loop(client: Arc<Mutex<Self>>, receiver: Receiver<()>) {
-        let mut receiver = receiver;
+    pub async fn start_loop(client: Arc<Mutex<Self>>, mut receiver: Receiver<()>) {
+        let client_arc = client.clone();
         loop {
             if let Err(err) = receiver.try_recv() {
                 if err == TryRecvError::Closed {
                     break;
                 }
-                let client_lock = &mut client.lock().await;
+                let client_lock = &mut client_arc.lock().await;
                 if !client_lock.connected {
                     break;
                 }
-                if let Some(server) = &mut client_lock.server {
-                    if let Ok(packet) = &mut server.read_next_packet().await {
-                        if let Some(packet) = packet {
-                            client_lock.handle_packet(packet)
-                        }
+                let packet_read: Result<super::Packet>;
+                {
+                    let delayer = client_lock.read_packet();
+                    pin_mut!(delayer);
+                    if let Ok(packet) =
+                        tokio::time::timeout(std::time::Duration::from_millis(1), &mut delayer).await
+                    {
+                        packet_read = packet;
+                    } else {
+                        continue;
                     }
-                } else {
-                    break;
                 }
+                if let Ok(packet) = packet_read {
+                    client_lock.handle_packet(packet).await;
+                };
             }
         }
     }
@@ -275,9 +273,8 @@ impl Client {
                 let read = self.read_packet().await;
                 if let Ok(packet) = read {
                     match packet {
-                        Packet::LoginSuccess(_) => {
-                            self.connected = true;
-                            self.set_state(State::Play)
+                        Packet::LoginSuccess(spec) => {
+                            self.login_success(spec)
                         }
                         _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
                     }
@@ -326,9 +323,8 @@ impl Client {
                                 Packet::LoginSetCompression(body) => {
                                     self.set_compression_threshold(body.threshold.0).await
                                 }
-                                Packet::LoginSuccess(_) => {
-                                    self.connected = true;
-                                    self.set_state(State::Play)
+                                Packet::LoginSuccess(spec) => {
+                                    self.login_success(spec)
                                 }
                                 _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
                             }
@@ -349,6 +345,16 @@ impl Client {
         }
     }
 
+    /// Executed when server login succeeds.
+    fn login_success(&mut self, spec: proto::LoginSuccessSpec) -> Result<()> {
+        self.connected = true;
+        if self.profile.offline {
+            self.profile.game_profile.id = spec.uuid;
+            self.profile.game_profile.name = spec.username;
+        }
+        self.set_state(State::Play)
+    }
+
     /// Completes the clientside part of the Minecraft login sequence.
     async fn login(&mut self) -> Result<()> {
         if self.connected {
@@ -361,14 +367,29 @@ impl Client {
                 Packet::LoginSetCompression(body) => {
                     self.set_compression_threshold(body.threshold.0).await
                 }
-                Packet::LoginSuccess(_) => {
-                    self.connected = true;
-                    self.set_state(State::Play)
+                Packet::LoginSuccess(spec) => {
+                    self.login_success(spec)
                 }
                 _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
             }
         } else {
             Err(read.err().unwrap())
         }
+    }
+
+    /// Handle received packets.
+    async fn handle_packet(&mut self, packet: Packet) {
+        match packet {
+            Packet::PlayServerChatMessage(body) => {
+                if body.sender != self.profile.game_profile.id {
+                    if let Some(message) = body.message.to_traditional() {
+                        println!("{}", message);
+                    } else {
+                        println!("Raw message: {:?}", body);
+                    }
+                }
+            }
+            _ => {}
+        };
     }
 }
