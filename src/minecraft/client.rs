@@ -1,4 +1,4 @@
-use super::{net::connection::MinecraftConnection, proto, Packet};
+use super::{connection::MinecraftConnection, proto, Packet};
 use anyhow::Result;
 use futures::pin_mut;
 use mcproto_rs::{protocol::State, types::CountedArray};

@@ -1,4 +1,4 @@
-use super::net::connection::MinecraftConnection;
+use super::connection::MinecraftConnection;
 use super::{
     proto::{HandshakeNextState, StatusResponseSpec},
     Packet,

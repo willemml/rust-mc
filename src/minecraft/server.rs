@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::{net::TcpListener, runtime::Runtime, sync::Mutex};
 
-use super::{net::connection::MinecraftConnection, proto, Packet};
+use super::{connection::MinecraftConnection, proto, Packet};
 use anyhow::Result;
 use mcproto_rs::{status::StatusSpec, types::Chat, uuid::UUID4};
 use proto::ChatPosition;
@@ -278,6 +278,7 @@ impl Server {
     }
 }
 
+#[allow(dead_code)]
 struct ServerClient {
     name: String,
     uuid: UUID4,
