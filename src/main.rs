@@ -5,53 +5,90 @@ pub mod minecraft;
 /// Mojang API implementation.
 pub mod mojang;
 
-pub use minecraft::{client::Client, server::Server};
+pub use minecraft::{client::Client, server::Server, status::StatusChecker};
 pub use mojang::auth;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::{
+    runtime::Runtime,
+    sync::{mpsc, Mutex},
+    task::JoinHandle,
+};
 
 fn main() {
-    let runtime_one = tokio::runtime::Runtime::new().unwrap();
-    let mut runtime_two = tokio::runtime::Runtime::new().unwrap();
-    let runtime_three = tokio::runtime::Runtime::new().unwrap();
-    runtime_one.spawn(Server::new("127.0.0.1:25565".to_string(), false).start());
-    let status_checker =
-        minecraft::status::StatusChecker::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565);
-    if let Ok(status) = status_checker.get_status_sync() {
-        println!(
-            "Description: {}",
-            status.description.to_traditional().unwrap().to_string()
-        );
-    }
-    runtime_two.block_on(async_main(runtime_three));
-    loop {}
+    Runtime::new()
+        .unwrap()
+        .block_on(async_main(Arc::new(Mutex::new(Runtime::new().unwrap()))));
 }
 
-async fn async_main(runtime: tokio::runtime::Runtime) {
-    let mut client = Client::new(
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-        auth::Profile::new("test_player", "", true),
-    );
-    let connect = client.connect().await;
-    let client_arc = Arc::new(Mutex::new(client));
-    let client_other = client_arc.clone();
-    let (_tx, rx) = mpsc::channel(20);
-    if let Ok(_) = connect {
+#[allow(unused_must_use)]
+async fn async_main(runtime: Arc<Mutex<Runtime>>) {
+    let server = start_server("127.0.0.1:25565".to_string(), false, runtime.clone()).await;
+    let client = start_client(Ipv4Addr::LOCALHOST, 25565, "rust_mc", runtime.clone()).await;
+    if let Ok((_, client, _)) = client {
         println!("Successfully connected to localhost:25565");
-        runtime.spawn(Client::start_loop(client_other, rx));
         let mut buffer = String::new();
         let stdin = std::io::stdin();
         loop {
             if let Ok(_) = stdin.read_line(&mut buffer) {
-                if let Err(_) = client_arc.lock().await.send_chat_message(&buffer).await {
+                if let Err(_) = client.lock().await.send_chat_message(&buffer).await {
                     println!("Failed to send message...")
                 }
                 buffer.clear();
             }
         }
     } else {
-        println!("test_player failed to connect: {}", connect.err().unwrap())
+        println!("Client failed to connect: {}", client.err().unwrap())
+    }
+    server.0.await;
+}
+
+async fn start_server(
+    address: String,
+    online: bool,
+    runtime: Arc<Mutex<Runtime>>,
+) -> (
+    JoinHandle<anyhow::Result<()>>,
+    Arc<Mutex<Server>>,
+    mpsc::Sender<()>,
+) {
+    let server = Arc::new(Mutex::new(Server::new(address, online)));
+    let (tx, rx) = mpsc::channel(20);
+    (
+        runtime
+            .lock()
+            .await
+            .spawn(Server::start(server.clone(), rx, runtime.clone())),
+        server,
+        tx,
+    )
+}
+
+type ClientResult = anyhow::Result<(JoinHandle<()>, Arc<Mutex<Client>>, mpsc::Sender<()>)>;
+
+async fn start_client(
+    ip: Ipv4Addr,
+    port: u16,
+    username: &str,
+    runtime: Arc<Mutex<Runtime>>,
+) -> ClientResult {
+    let client = Arc::new(Mutex::new(Client::new(
+        SocketAddr::new(IpAddr::V4(ip), port),
+        auth::Profile::new(username, "", true),
+    )));
+    let (tx, rx) = mpsc::channel(20);
+    let connect = client.lock().await.connect().await;
+    if let Ok(_) = connect {
+        Ok((
+            runtime
+                .lock()
+                .await
+                .spawn(Client::start_loop(client.clone(), rx)),
+            client,
+            tx,
+        ))
+    } else {
+        Err(connect.err().unwrap())
     }
 }

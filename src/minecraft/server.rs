@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tokio::{net::TcpListener, runtime::Runtime, sync::Mutex};
+use tokio::{net::TcpListener, runtime::Runtime, sync::mpsc::Receiver, sync::Mutex};
 
 use super::{connection::MinecraftConnection, proto, Packet};
 use anyhow::Result;
@@ -17,8 +17,6 @@ pub struct Server {
     online: bool,
     /// The server's status.
     status: Option<StatusSpec>,
-    /// Runtime for threads/async work.
-    runtime: Runtime,
 }
 
 impl Server {
@@ -29,22 +27,37 @@ impl Server {
             bind_address,
             status: None,
             online,
-            runtime: Runtime::new().unwrap(),
         }
     }
 
     /// Starts listening for tcp connections on `self.bind_address`.
     /// When a client connects the server performs the login sequence.
-    pub async fn start(self) -> Arc<Mutex<Self>> {
-        let connections = self.players.clone();
-        let address = self.bind_address.clone();
-        let mut listener = TcpListener::bind(address).await;
-        let self_mutex = Arc::new(Mutex::new(self));
-        if let Ok(listener) = &mut listener {
-            loop {
+    pub async fn start(self_mutex: Arc<Mutex<Self>>, mut receiver: Receiver<()>, runtime: Arc<Mutex<Runtime>>) -> Result<()> {
+        let mut listener: TcpListener;
+        let connections: Arc<Mutex<Vec<Arc<ServerClient>>>>;
+        {
+            let self_lock = self_mutex.lock().await;
+            let bind = TcpListener::bind(self_lock.bind_address.clone()).await;
+            if let Ok(bind) = bind {
+                listener = bind;
+                connections = self_lock.players.clone();
+            } else {
+                println!("{}", bind.err().unwrap());
+                return Err(anyhow::anyhow!(
+                    "Failed to bind to {}",
+                    self_lock.bind_address.clone()
+                ));
+            }
+        }
+        loop {
+            if let Err(err) = receiver.try_recv() {
+                if err == tokio::sync::mpsc::error::TryRecvError::Closed {
+                    break;
+                }
                 if let Ok((socket, address)) = listener.accept().await {
                     let self_join_arc = self_mutex.clone();
                     let connections = connections.clone();
+                    let runtime_arc = runtime.clone();
                     let join = async move {
                         let mut client = MinecraftConnection::from_tcp_stream(socket);
                         let handshake = client.handshake(None, None).await;
@@ -99,11 +112,15 @@ impl Server {
                                             };
                                         }
                                     };
-                                    self_join_arc.lock().await.runtime.spawn(packet_loop);
+                                    runtime_arc.lock().await.spawn(packet_loop);
                                     connections.lock().await.push(server_client);
                                     println!("{} successfully logged in.", address.to_string());
                                 } else {
-                                    println!("{} failed to log in.", address.to_string())
+                                    println!(
+                                        "{} failed to log in: {}",
+                                        address.to_string(),
+                                        login.err().unwrap()
+                                    )
                                 }
                             } else {
                                 let status: Result<()>;
@@ -131,11 +148,11 @@ impl Server {
                             )
                         }
                     };
-                    self_mutex.lock().await.runtime.spawn(join);
+                    runtime.lock().await.spawn(join);
                 }
             }
-        };
-        self_mutex
+        }
+        return Ok(());
     }
 
     /// Handle client login.
@@ -145,11 +162,12 @@ impl Server {
         compression_threshold: i32,
     ) -> Result<(String, UUID4)> {
         use super::Packet::{
-            LoginEncryptionRequest, LoginSetCompression, LoginStart, LoginSuccess, LoginEncryptionResponse
+            LoginEncryptionRequest, LoginEncryptionResponse, LoginSetCompression, LoginStart,
+            LoginSuccess,
         };
+        use crate::mojang::auth;
         use mcproto_rs::protocol::State::Play;
         use mcproto_rs::types::CountedArray;
-        use crate::mojang::auth;
         use proto::{LoginEncryptionRequestSpec, LoginSetCompressionSpec, LoginSuccessSpec};
         let client = &mut client_mutex.lock().await;
         let second = &mut client.read_next_packet().await;
@@ -159,8 +177,8 @@ impl Server {
             };
             let mut result = (body.name.clone(), UUID4::random());
             if self.online {
-                let server_id = "                  ".to_string();
-                let public_key: &mut [u8] = &mut [0; 128];
+                let server_id = "                ".to_string();
+                let public_key: &mut [u8] = &mut [0; 16];
                 for mut _i in public_key.iter() {
                     _i = &rand::random::<u8>();
                 }
@@ -182,19 +200,35 @@ impl Server {
                     let response = client.read_next_packet().await;
                     if let Ok(Some(LoginEncryptionResponse(response))) = response {
                         if response.verify_token == CountedArray::from(verify_token.to_vec()) {
-                            if let Ok(verified) = auth::verify_join(&body.name, server_id, &response.shared_secret, public_key).await {
+                            let verify = auth::verify_join(
+                                &body.name,
+                                server_id,
+                                &response.shared_secret,
+                                public_key,
+                            )
+                            .await;
+                            if let Ok(verified) = verify {
+                                if let Err(error) =
+                                    client.enable_encryption(public_key, verify_token)
+                                {
+                                    return Err(error);
+                                }
                                 result = verified;
                             } else {
-                                return Err(anyhow::anyhow!("Client verification failed."))
+                                return Err(verify.err().unwrap());
                             }
                         } else {
-                            return Err(anyhow::anyhow!("Client verification failed."))
+                            return Err(anyhow::anyhow!(
+                                "Client did not send the correct response to encryption request. {:?}", response
+                            ));
                         }
                     } else {
-                        if response.is_err() {
-                            return Err(response.err().unwrap());
+                        if let Some(error) = response.err() {
+                            return Err(error);
                         } else {
-                            return Err(anyhow::anyhow!("Client did not send the correct response to encryption request."))
+                            return Err(anyhow::anyhow!(
+                                "Client did not send a valid response to the encryption request."
+                            ));
                         }
                     }
                 }
@@ -220,7 +254,7 @@ impl Server {
             return Ok(result);
         } else {
             return Err(anyhow::anyhow!(
-                "Client did not follow up with status request."
+                "Client did not follow up with login start."
             ));
         }
     }
