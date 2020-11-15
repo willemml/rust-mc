@@ -27,7 +27,7 @@ fn main() {
 #[allow(unused_must_use)]
 async fn async_main(runtime: Arc<Mutex<Runtime>>) {
     let server = start_server("127.0.0.1:25565".to_string(), "Rust MC server testing.".to_string(), false, runtime.clone()).await;
-    let client = start_client(Ipv4Addr::LOCALHOST, 25565, "rust_mc", runtime.clone()).await;
+    let client = start_client(Ipv4Addr::LOCALHOST, 25565, "wnuke", runtime.clone()).await;
     if let Ok((_, client, _)) = client {
         println!("Successfully connected to localhost:25565");
         let mut buffer = String::new();

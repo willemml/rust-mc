@@ -147,6 +147,15 @@ impl Server {
                                         uuid: login.1,
                                         connection: client_arc.clone(),
                                     });
+                                    {
+                                        for player in connections.lock().await.keys() {
+                                            let client = server_client.clone();
+                                            if player.0 == client.name || player.1 == client.uuid {
+                                                let _kick = Self::play_kick(client_arc.lock().await, Chat::from_text("Someone with the same name or UUID as you is already connected.")).await;
+                                                return;
+                                            }
+                                        }
+                                    }
                                     let server_client_arc = server_client.clone();
                                     let self_loop_arc = self_join_arc.clone();
                                     let client_loop_arc = client_arc.clone();
