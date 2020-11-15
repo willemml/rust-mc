@@ -111,14 +111,24 @@ impl StatusChecker {
     }
 }
 
+/// Server status manager for servers.
 pub struct ServerStatus {
+    /// Description/MOTD to send clients.
     description: Chat,
+    /// The version spec to send clients, contains the version string and the protocol version number.
     version: StatusVersionSpec,
+    /// Player count and short list to send to clients.
     players: StatusPlayersSpec,
+    /// Server icon to send to clients.
     favicon: Option<StatusFaviconSpec>,
 }
 
 impl ServerStatus {
+    /// Sends this Status object to a Client.
+    ///
+    /// # Arguments
+    ///
+    /// * `client` Arc-Mutex wrapping the client to send the status to.
     pub async fn send_status(&self, client: Arc<Mutex<MinecraftConnection>>) -> Result<(), ()> {
         let status_spec = StatusSpec {
             description: self.description.clone(),

@@ -1,4 +1,5 @@
-/// Authentication API
+/// Mojang authentication API
+/// Implementation of the HTTP API used to authenticate clients with Mojang.
 pub mod auth;
 /// Minecraft server ID hash methods
 mod hash;

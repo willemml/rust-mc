@@ -1,7 +1,8 @@
-// Modified version of file from gist https://gist.github.com/RoccoDev/8fa130f1946f89702f799f89b8469bc9 by RoccoDev
+// Modified version of https://gist.github.com/RoccoDev/8fa130f1946f89702f799f89b8469bc9
 
 use openssl::sha::Sha1;
 
+/// Calculate hashes of Minecraft servers to authenticate with them and clients.
 pub fn calc_hash(server_id: &str, shared_secret: &[u8], public_key: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(server_id.as_bytes());

@@ -16,12 +16,14 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// Main, currently just used to create runtimes start `async_main`.
 fn main() {
     Runtime::new()
         .unwrap()
         .block_on(async_main(Arc::new(Mutex::new(Runtime::new().unwrap()))));
 }
 
+/// Async main, used for launching and testing client and server.
 #[allow(unused_must_use)]
 async fn async_main(runtime: Arc<Mutex<Runtime>>) {
     let server = start_server("127.0.0.1:25565".to_string(), false, runtime.clone()).await;
@@ -44,6 +46,7 @@ async fn async_main(runtime: Arc<Mutex<Runtime>>) {
     server.0.await;
 }
 
+/// Starts a server, mostly for testing.
 async fn start_server(
     address: String,
     online: bool,
@@ -67,6 +70,7 @@ async fn start_server(
 
 type ClientResult = anyhow::Result<(JoinHandle<()>, Arc<Mutex<Client>>, mpsc::Sender<()>)>;
 
+/// Starts a client, mostly for testing.
 async fn start_client(
     ip: Ipv4Addr,
     port: u16,

@@ -16,7 +16,9 @@ pub struct Profile {
     username: String,
     /// Password of the Minecraft account.
     password: String,
+    /// Access token used when connecting to Minecraft servers.
     access_token: String,
+    /// Client token used to refresh the access token without using the username and password again.
     client_token: String,
     /// Whether or not this account authenticates with Mojang (true for no, false for yes).
     pub offline: bool,

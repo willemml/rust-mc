@@ -20,7 +20,20 @@ pub struct Server {
 }
 
 impl Server {
-    /// Create a new server based on an address.
+    /// Create a new server that binds to an address, does not launch/start the server.
+    ///
+    /// # Arguments
+    ///
+    /// * `bind_address` local address to bind to and listen for connections on
+    /// * `online` whether or not to check if players have authenticated with Mojang before letting them join, also enalbes encryption
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use rust_mc::minecraft::server::Server;
+    ///
+    /// let server = Server::new("127.0.0.1:25565", false);
+    /// ```
     pub fn new(bind_address: String, online: bool) -> Self {
         Server {
             players: Arc::new(Mutex::new(vec![])),
@@ -31,7 +44,33 @@ impl Server {
     }
 
     /// Starts listening for tcp connections on `self.bind_address`.
-    /// When a client connects the server performs the login sequence.
+    /// Fully handles client connections, performs the login sequence and starts a new thread listening for packets from that client.
+    ///
+    /// # Arguments
+    ///
+    /// * `self_mutex` An Arc-Mutex containing the server that should start listening, mutex is locked as little as possible.
+    /// * `receiver` Receiver part of an rx/tx channel, sending anything or closing the channel causes this to stop looping.
+    /// * `runtime` Arc-Mutex wrapping a tokio runtime, locked as little as possible, used for launching threads to handle individual clients.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use rust_mc::minecraft::server::Server;
+    /// use std::sync::Arc;
+    /// use tokio::{
+    ///     runtime::Runtime,
+    ///     sync::{mpsc, Mutex}
+    /// };
+    ///
+    /// let server = Arc::new(Mutex::new(Server::new("127.0.0.1:25565", false)));
+    /// let (tx, rx) = mpsc::channel(20);
+    /// let runtime = Arc::new(Mutex::new(Runtime::new().unwrap()));
+    ///
+    /// Server::start(server, rx, runtime); // Start the server.
+    ///
+    /// std::thread::delay(std::time::Duration::from_millis(1000));
+    /// tx.try_lock().send(()); // Stop the server after 1000ms by sending something.
+    /// ```
     pub async fn start(self_mutex: Arc<Mutex<Self>>, mut receiver: Receiver<()>, runtime: Arc<Mutex<Runtime>>) -> Result<()> {
         let mut listener: TcpListener;
         let connections: Arc<Mutex<Vec<Arc<ServerClient>>>>;
