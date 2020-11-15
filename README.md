@@ -1,4 +1,4 @@
 # rust-mc
 
-Headless Minecraft Client written in Rust. (Like hl-mc-kt)
+A Minecraft server and a headless client written in Rust.
 
