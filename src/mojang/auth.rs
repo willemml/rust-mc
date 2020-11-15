@@ -337,6 +337,29 @@ impl Profile {
     }
 }
 
+/// Checks that a player has authenticated with Mojang before joining server.
+///
+/// # Arguments
+///
+/// * `username` username of the player to verify.
+/// * `server_id` String containing the ID of the server tha player is trying to join.
+/// * `shared_secret` The shared secret that the client generated.
+/// * `public_key` The server's public key.
+/// 
+/// # Examples
+///
+/// ```rust
+/// use rust_mc::mojang::auth::verify_join;
+///
+/// let username = "rust_mc";
+/// let server_id = "16to20charstring".to_string();
+/// let shared_secret: &[u8] = &[0; 16];
+/// let public_key: &[u8] = &[0; 16];
+///
+/// if let Ok((username, uuid)) = verify_join(username, server_id, shared_secret, public_key).await {
+///     println!("{} has successfully authenticated with Mojang and their UUID is {}.", username, uuid.to_string());
+/// }
+/// ```
 pub async fn verify_join(
     username: &str,
     server_id: String,
@@ -369,6 +392,7 @@ pub struct MinecraftProfile {
     pub id: UUID4,
 }
 
+/// Response to a request to authenticate with Mojang.
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Clone)]
 struct AuthenticateResponse {
@@ -378,6 +402,7 @@ struct AuthenticateResponse {
     selectedProfile: MinecraftProfile,
 }
 
+/// Payload containg a client token and an access token.
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Clone)]
 struct ClientAccessTokenPayload {
@@ -385,6 +410,7 @@ struct ClientAccessTokenPayload {
     clientToken: String,
 }
 
+/// Response to a request to refresh an access token.
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Clone)]
 struct RefreshResponse {
@@ -393,6 +419,7 @@ struct RefreshResponse {
     selectedProfile: MinecraftProfile,
 }
 
+/// Payload sent to invalidate all access tokens associated with an account.
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Clone)]
 struct SignoutPayload {
@@ -400,6 +427,7 @@ struct SignoutPayload {
     password: String,
 }
 
+/// Agent, game type and the version of the agent.
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Clone)]
 struct Agent {
@@ -407,6 +435,7 @@ struct Agent {
     version: i8,
 }
 
+/// Request sent to ask for an access token to an account using a username and password.
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Clone)]
 struct AuthenticateRequest {
@@ -415,6 +444,7 @@ struct AuthenticateRequest {
     password: String,
 }
 
+/// Request sent when joining a server.
 #[allow(non_snake_case)]
 #[derive(Serialize, Deserialize, Clone)]
 struct JoinRequest {
@@ -423,6 +453,7 @@ struct JoinRequest {
     serverId: String,
 }
 
+/// Response to a request checking if a plyer is authenticated.
 #[derive(Serialize, Deserialize, Clone)]
 struct ServerJoinResponse {
     id: UUID4,

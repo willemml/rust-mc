@@ -5,11 +5,7 @@ use super::{
 };
 use mcproto_rs::status::{StatusFaviconSpec, StatusPlayersSpec, StatusSpec, StatusVersionSpec};
 use mcproto_rs::types::Chat;
-use std::{
-    net::{IpAddr, SocketAddr},
-    sync::Arc,
-};
-use tokio::sync::Mutex;
+use std::net::{IpAddr, SocketAddr};
 
 /// A status checker for Minecraft servers.
 pub struct StatusChecker {
@@ -114,13 +110,13 @@ impl StatusChecker {
 /// Server status manager for servers.
 pub struct ServerStatus {
     /// Description/MOTD to send clients.
-    description: Chat,
+    pub description: Chat,
     /// The version spec to send clients, contains the version string and the protocol version number.
-    version: StatusVersionSpec,
+    pub version: StatusVersionSpec,
     /// Player count and short list to send to clients.
-    players: StatusPlayersSpec,
+    pub players: StatusPlayersSpec,
     /// Server icon to send to clients.
-    favicon: Option<StatusFaviconSpec>,
+    pub favicon: Option<StatusFaviconSpec>,
 }
 
 impl ServerStatus {
@@ -128,8 +124,8 @@ impl ServerStatus {
     ///
     /// # Arguments
     ///
-    /// * `client` Arc-Mutex wrapping the client to send the status to.
-    pub async fn send_status(&self, client: Arc<Mutex<MinecraftConnection>>) -> Result<(), ()> {
+    /// * `client` Arc-Mutex containing the client to send the status to.
+    pub async fn send_status(&self, client: &mut MinecraftConnection) -> anyhow::Result<()> {
         let status_spec = StatusSpec {
             description: self.description.clone(),
             favicon: self.favicon.clone(),
@@ -139,15 +135,8 @@ impl ServerStatus {
         let response_spec = StatusResponseSpec {
             response: status_spec,
         };
-        if let Ok(_) = client
-            .lock()
-            .await
+        client
             .write_packet(super::Packet::StatusResponse(response_spec))
             .await
-        {
-            Ok(())
-        } else {
-            Err(())
-        }
     }
 }

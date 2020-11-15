@@ -1,22 +1,26 @@
-use std::sync::Arc;
+use std::{collections::HashMap, convert::TryInto, sync::Arc};
 
-use tokio::{net::TcpListener, runtime::Runtime, sync::mpsc::Receiver, sync::Mutex};
+use tokio::{net::TcpListener, runtime::Runtime};
+use tokio::sync::{MutexGuard, Mutex, mpsc::Receiver};
 
-use super::{connection::MinecraftConnection, proto, Packet};
+use super::{connection::MinecraftConnection, proto, status::ServerStatus, Packet};
 use anyhow::Result;
-use mcproto_rs::{status::StatusSpec, types::Chat, uuid::UUID4};
+use mcproto_rs::{types::Chat, uuid::UUID4};
 use proto::ChatPosition;
+
+type NameUUID = (String, UUID4);
+type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<ServerClient>>>>;
 
 /// Represents a Minecraft server.
 pub struct Server {
     /// Clients that have connected.
-    players: Arc<Mutex<Vec<Arc<ServerClient>>>>,
+    players: ConnectedPlayers,
     /// Address to bind the listener to.
     bind_address: String,
     /// Whether or not to make sure players have authenticated with Mojang, also enables packet encryption.
     online: bool,
     /// The server's status.
-    status: Option<StatusSpec>,
+    status: ServerStatus,
 }
 
 impl Server {
@@ -34,11 +38,25 @@ impl Server {
     ///
     /// let server = Server::new("127.0.0.1:25565", false);
     /// ```
-    pub fn new(bind_address: String, online: bool) -> Self {
+    pub fn new(bind_address: String, description: String, max_players: i32, online: bool) -> Self {
+        use mcproto_rs::status::{StatusPlayersSpec, StatusVersionSpec};
+        let status = ServerStatus {
+            description: Chat::from_text(&description),
+            players: StatusPlayersSpec {
+                max: max_players,
+                online: 0,
+                sample: vec![],
+            },
+            version: StatusVersionSpec {
+                name: "rust-mc 1.16.3".to_string(),
+                protocol: 753,
+            },
+            favicon: None,
+        };
         Server {
-            players: Arc::new(Mutex::new(vec![])),
+            players: Arc::new(Mutex::new(HashMap::new())),
             bind_address,
-            status: None,
+            status,
             online,
         }
     }
@@ -50,7 +68,7 @@ impl Server {
     ///
     /// * `self_mutex` An Arc-Mutex containing the server that should start listening, mutex is locked as little as possible.
     /// * `receiver` Receiver part of an rx/tx channel, sending anything or closing the channel causes this to stop looping.
-    /// * `runtime` Arc-Mutex wrapping a tokio runtime, locked as little as possible, used for launching threads to handle individual clients.
+    /// * `runtime` Arc-Mutex containing a tokio runtime, locked as little as possible, used for launching threads to handle individual clients.
     ///
     /// # Examples
     ///
@@ -71,9 +89,13 @@ impl Server {
     /// std::thread::delay(std::time::Duration::from_millis(1000));
     /// tx.try_lock().send(()); // Stop the server after 1000ms by sending something.
     /// ```
-    pub async fn start(self_mutex: Arc<Mutex<Self>>, mut receiver: Receiver<()>, runtime: Arc<Mutex<Runtime>>) -> Result<()> {
+    pub async fn start(
+        self_mutex: Arc<Mutex<Self>>,
+        mut receiver: Receiver<()>,
+        runtime: Arc<Mutex<Runtime>>,
+    ) -> Result<()> {
         let mut listener: TcpListener;
-        let connections: Arc<Mutex<Vec<Arc<ServerClient>>>>;
+        let connections: ConnectedPlayers;
         {
             let self_lock = self_mutex.lock().await;
             let bind = TcpListener::bind(self_lock.bind_address.clone()).await;
@@ -110,11 +132,14 @@ impl Server {
                             if result == mcproto_rs::protocol::State::Login {
                                 let login: Result<(String, UUID4)>;
                                 {
-                                    login = self_join_arc
-                                        .lock()
-                                        .await
-                                        .handle_login(client_arc.clone(), 256)
-                                        .await;
+                                    let mut self_lock = self_join_arc.lock().await;
+                                    if connections.clone().lock().await.len()
+                                        >= self_lock.status.players.max.try_into().unwrap()
+                                    {
+                                        let _kick = Self::login_kick(client_arc.lock().await, Chat::from_text("Server is full, wait for another player to leave.")).await;
+                                        return;
+                                    }
+                                    login = self_lock.handle_login(client_arc.clone(), 256).await;
                                 }
                                 if let Ok(login) = login {
                                     let server_client = Arc::new(ServerClient {
@@ -152,7 +177,13 @@ impl Server {
                                         }
                                     };
                                     runtime_arc.lock().await.spawn(packet_loop);
-                                    connections.lock().await.push(server_client);
+                                    connections.lock().await.insert(
+                                        Arc::new((
+                                            server_client.name.clone(),
+                                            server_client.uuid.clone(),
+                                        )),
+                                        server_client,
+                                    );
                                     println!("{} successfully logged in.", address.to_string());
                                 } else {
                                     println!(
@@ -303,37 +334,26 @@ impl Server {
         &mut self,
         client_mutex: Arc<Mutex<MinecraftConnection>>,
     ) -> anyhow::Result<()> {
-        use super::Packet::{StatusPing, StatusPong, StatusRequest, StatusResponse};
-        use mcproto_rs::status::{StatusPlayerSampleSpec, StatusPlayersSpec, StatusVersionSpec};
-        use proto::{StatusPongSpec, StatusResponseSpec};
+        use super::Packet::{StatusPing, StatusPong, StatusRequest};
+        use mcproto_rs::status::StatusPlayerSampleSpec;
+        use proto::StatusPongSpec;
         let client = &mut client_mutex.lock().await;
         let second = &mut client.read_next_packet().await;
         if let Ok(second) = second {
             if let Some(StatusRequest(_)) = second {
-                let status = if let Some(status_spec) = self.status.clone() {
-                    status_spec
-                } else {
-                    StatusSpec {
-                        description: Chat::from_text(
-                            "Welcome to rust-mc, a Minecraft server and client written in rust!",
-                        ),
-                        version: StatusVersionSpec {
-                            name: "rust-mc 1.16.3".to_string(),
-                            protocol: 753,
-                        },
-                        players: StatusPlayersSpec {
-                            max: 20,
-                            online: 10,
-                            sample: vec![StatusPlayerSampleSpec {
-                                id: UUID4::random(),
-                                name: "".to_string(),
-                            }],
-                        },
-                        favicon: None,
+                {
+                    let connected_players = self.players.lock().await;
+                    self.status.players.online = connected_players.len().try_into().unwrap();
+                    let mut players: Vec<StatusPlayerSampleSpec> = vec![];
+                    for player in connected_players.keys() {
+                        players.push(StatusPlayerSampleSpec {
+                            id: player.1,
+                            name: player.0.clone(),
+                        });
                     }
-                };
-                let response_spec = StatusResponseSpec { response: status };
-                if let Err(error) = client.write_packet(StatusResponse(response_spec)).await {
+                    self.status.players.sample = players;
+                }
+                if let Err(error) = self.status.send_status(client).await {
                     return Err(error);
                 }
                 let third = client.read_next_packet().await;
@@ -362,17 +382,45 @@ impl Server {
         }
     }
 
-    /// Send a chat message to a client.
-    pub async fn send_chat_message(
-        connection: tokio::sync::MutexGuard<'_, MinecraftConnection>,
-        message: Chat,
-    ) -> Result<()> {
-        Self::send_message(connection, message, ChatPosition::ChatBox).await
+    /// Kicks a player that is in the login state.
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` Connection of the player to kick.
+    /// * `message` Message to send the player (reason).
+    pub async fn login_kick(mut connection: MutexGuard<'_, MinecraftConnection>, message: Chat) -> Result<()> {
+        use Packet::LoginDisconnect;
+        use proto::LoginDisconnectSpec;
+        let spec = LoginDisconnectSpec {
+            message
+        };
+        connection.write_packet(LoginDisconnect(spec)).await
+    }
+
+    /// Kicks a player that is in the login state.
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` Connection of the player to kick.
+    /// * `reason` Reason for the kick.
+    pub async fn play_kick(mut connection: MutexGuard<'_, MinecraftConnection>, reason: Chat) -> Result<()> {
+        use Packet::PlayDisconnect;
+        use proto::PlayDisconnectSpec;
+        let spec = PlayDisconnectSpec {
+            reason
+        };
+        connection.write_packet(PlayDisconnect(spec)).await
     }
 
     /// Send a message to a client (can be sent to multiple locations on client screen).
+    ///
+    /// # Arguments
+    ///
+    /// * `connection` Arc-Mutex containing the client that the message should be sent to.
+    /// * `message` Chat message to send.
+    /// * `position` where the message should be displayed on the client's screen.
     pub async fn send_message(
-        mut connection: tokio::sync::MutexGuard<'_, MinecraftConnection>,
+        mut connection: MutexGuard<'_, MinecraftConnection>,
         message: Chat,
         position: ChatPosition,
     ) -> Result<()> {
@@ -387,10 +435,20 @@ impl Server {
         connection.write_packet(packet).await
     }
 
+    /// Send a chat message to all connected clients.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` Chat message to send.
     #[allow(unused_must_use)]
     pub async fn broadcast_chat(&mut self, message: Chat) {
-        for player in self.players.clone().lock().await.iter() {
-            Self::send_chat_message(player.connection.lock().await, message.clone()).await;
+        for player in self.players.clone().lock().await.values() {
+            Self::send_message(
+                player.connection.lock().await,
+                message.clone(),
+                proto::ChatPosition::ChatBox,
+            )
+            .await;
         }
     }
 
@@ -409,6 +467,7 @@ impl Server {
     }
 }
 
+/// Represents a connected client/player.
 #[allow(dead_code)]
 struct ServerClient {
     name: String,

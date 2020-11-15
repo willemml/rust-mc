@@ -26,7 +26,7 @@ fn main() {
 /// Async main, used for launching and testing client and server.
 #[allow(unused_must_use)]
 async fn async_main(runtime: Arc<Mutex<Runtime>>) {
-    let server = start_server("127.0.0.1:25565".to_string(), false, runtime.clone()).await;
+    let server = start_server("127.0.0.1:25565".to_string(), "Rust MC server testing.".to_string(), false, runtime.clone()).await;
     let client = start_client(Ipv4Addr::LOCALHOST, 25565, "rust_mc", runtime.clone()).await;
     if let Ok((_, client, _)) = client {
         println!("Successfully connected to localhost:25565");
@@ -49,6 +49,7 @@ async fn async_main(runtime: Arc<Mutex<Runtime>>) {
 /// Starts a server, mostly for testing.
 async fn start_server(
     address: String,
+    description: String,
     online: bool,
     runtime: Arc<Mutex<Runtime>>,
 ) -> (
@@ -56,7 +57,7 @@ async fn start_server(
     Arc<Mutex<Server>>,
     mpsc::Sender<()>,
 ) {
-    let server = Arc::new(Mutex::new(Server::new(address, online)));
+    let server = Arc::new(Mutex::new(Server::new(address, description, 5, online)));
     let (tx, rx) = mpsc::channel(20);
     (
         runtime
