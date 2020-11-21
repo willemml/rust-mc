@@ -1,15 +1,19 @@
-use std::{collections::HashMap, convert::TryInto, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    convert::TryInto,
+    sync::Arc,
+};
 
+use tokio::sync::{mpsc::Receiver, Mutex, MutexGuard};
 use tokio::{net::TcpListener, runtime::Runtime};
-use tokio::sync::{MutexGuard, Mutex, mpsc::Receiver};
 
-use super::{connection::MinecraftConnection, proto, status::ServerStatus, Packet};
+use super::{connection::MinecraftConnection, proto, status::ServerStatus, types::Player, Packet};
 use anyhow::Result;
 use mcproto_rs::{types::Chat, uuid::UUID4};
 use proto::ChatPosition;
 
 type NameUUID = (String, UUID4);
-type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<ServerClient>>>>;
+type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<Mutex<ServerClient>>>>>;
 
 /// Represents a Minecraft server.
 pub struct Server {
@@ -21,6 +25,8 @@ pub struct Server {
     online: bool,
     /// The server's status.
     status: ServerStatus,
+    /// Entity IDs in use.
+    used_entity_ids: HashSet<i32>,
 }
 
 impl Server {
@@ -58,6 +64,7 @@ impl Server {
             bind_address,
             status,
             online,
+            used_entity_ids: HashSet::new(),
         }
     }
 
@@ -122,7 +129,6 @@ impl Server {
                     let join = async move {
                         let mut client = MinecraftConnection::from_tcp_stream(socket);
                         let handshake = client.handshake(None, None).await;
-                        let client_arc = Arc::new(Mutex::new(client));
                         if let Ok(result) = handshake {
                             println!(
                                 "{} handshake with {} successful.",
@@ -130,37 +136,55 @@ impl Server {
                                 address.to_string()
                             );
                             if result == mcproto_rs::protocol::State::Login {
-                                let login: Result<(String, UUID4)>;
+                                let login;
                                 {
                                     let mut self_lock = self_join_arc.lock().await;
                                     if connections.clone().lock().await.len()
                                         >= self_lock.status.players.max.try_into().unwrap()
                                     {
-                                        let _kick = Self::login_kick(client_arc.lock().await, Chat::from_text("Server is full, wait for another player to leave.")).await;
+                                        let _kick = Self::login_kick(
+                                            client,
+                                            Chat::from_text(
+                                                "Server is full, wait for another player to leave.",
+                                            ),
+                                        )
+                                        .await;
                                         return;
                                     }
-                                    login = self_lock.handle_login(client_arc.clone(), 256).await;
+                                    login = self_lock.handle_login(&mut client, 256).await;
                                 }
                                 if let Ok(login) = login {
-                                    let server_client = Arc::new(ServerClient {
-                                        name: login.0,
-                                        uuid: login.1,
-                                        connection: client_arc.clone(),
-                                    });
+                                    let mut entity_id = i32::MIN;
+                                    {
+                                        let mut self_lock = self_join_arc.lock().await;
+                                        while self_lock.used_entity_ids.contains(&entity_id) {
+                                            entity_id = entity_id + 1;
+                                        }
+                                        self_lock.used_entity_ids.insert(entity_id);
+                                    }
+                                    let server_client = Arc::new(Mutex::new(ServerClient {
+                                        name: login.0.clone(),
+                                        uuid: login.1.clone(),
+                                        entity_id,
+                                        player: Player::new(
+                                            login.0.clone(),
+                                            login.1.clone(),
+                                            entity_id,
+                                        ),
+                                        connection: client,
+                                    }));
                                     {
                                         for player in connections.lock().await.keys() {
-                                            let client = server_client.clone();
-                                            if player.0 == client.name || player.1 == client.uuid {
-                                                let _kick = Self::play_kick(client_arc.lock().await, Chat::from_text("Someone with the same name or UUID as you is already connected.")).await;
+                                            if player.0 == login.0 || player.1 == login.1 {
+                                                let _kick = server_client.lock().await.kick(Chat::from_text("Someone with the same name or UUID as you is already connected.")).await;
                                                 return;
                                             }
                                         }
                                     }
                                     let server_client_arc = server_client.clone();
                                     let self_loop_arc = self_join_arc.clone();
-                                    let client_loop_arc = client_arc.clone();
                                     let packet_loop = async move {
-                                        let client_arc = client_loop_arc.clone();
+                                        let client_arc = server_client_arc.clone();
                                         let server_arc = self_loop_arc.clone();
                                         loop {
                                             let packet_read: Result<Option<super::Packet>>;
@@ -168,6 +192,7 @@ impl Server {
                                                 packet_read = client_arc
                                                     .lock()
                                                     .await
+                                                    .connection
                                                     .read_next_packet()
                                                     .await;
                                             }
@@ -178,7 +203,7 @@ impl Server {
                                                         .await
                                                         .handle_packet(
                                                             packet,
-                                                            server_client_arc.clone(),
+                                                            server_client_arc.clone().lock().await,
                                                         )
                                                         .await;
                                                 }
@@ -186,13 +211,10 @@ impl Server {
                                         }
                                     };
                                     runtime_arc.lock().await.spawn(packet_loop);
-                                    connections.lock().await.insert(
-                                        Arc::new((
-                                            server_client.name.clone(),
-                                            server_client.uuid.clone(),
-                                        )),
-                                        server_client,
-                                    );
+                                    connections
+                                        .lock()
+                                        .await
+                                        .insert(Arc::new((login.0, login.1)), server_client);
                                     println!("{} successfully logged in.", address.to_string());
                                 } else {
                                     println!(
@@ -204,11 +226,7 @@ impl Server {
                             } else {
                                 let status: Result<()>;
                                 {
-                                    status = self_join_arc
-                                        .lock()
-                                        .await
-                                        .handle_status(client_arc.clone())
-                                        .await;
+                                    status = self_join_arc.lock().await.handle_status(client).await;
                                 }
                                 if let Ok(_) = status {
                                     println!(
@@ -237,7 +255,7 @@ impl Server {
     /// Handle client login.
     async fn handle_login(
         &mut self,
-        client_mutex: Arc<Mutex<MinecraftConnection>>,
+        client: &mut MinecraftConnection,
         compression_threshold: i32,
     ) -> Result<(String, UUID4)> {
         use super::Packet::{
@@ -248,7 +266,6 @@ impl Server {
         use mcproto_rs::protocol::State::Play;
         use mcproto_rs::types::CountedArray;
         use proto::{LoginEncryptionRequestSpec, LoginSetCompressionSpec, LoginSuccessSpec};
-        let client = &mut client_mutex.lock().await;
         let second = &mut client.read_next_packet().await;
         if let Ok(Some(LoginStart(body))) = second {
             let response_spec = LoginSetCompressionSpec {
@@ -339,14 +356,10 @@ impl Server {
     }
 
     /// Handle status requests by a client.
-    async fn handle_status(
-        &mut self,
-        client_mutex: Arc<Mutex<MinecraftConnection>>,
-    ) -> anyhow::Result<()> {
+    async fn handle_status(&mut self, mut client: MinecraftConnection) -> anyhow::Result<()> {
         use super::Packet::{StatusPing, StatusPong, StatusRequest};
         use mcproto_rs::status::StatusPlayerSampleSpec;
         use proto::StatusPongSpec;
-        let client = &mut client_mutex.lock().await;
         let second = &mut client.read_next_packet().await;
         if let Ok(second) = second {
             if let Some(StatusRequest(_)) = second {
@@ -362,7 +375,7 @@ impl Server {
                     }
                     self.status.players.sample = players;
                 }
-                if let Err(error) = self.status.send_status(client).await {
+                if let Err(error) = self.status.send_status(&mut client).await {
                     return Err(error);
                 }
                 let third = client.read_next_packet().await;
@@ -397,51 +410,11 @@ impl Server {
     ///
     /// * `connection` Connection of the player to kick.
     /// * `message` Message to send the player (reason).
-    pub async fn login_kick(mut connection: MutexGuard<'_, MinecraftConnection>, message: Chat) -> Result<()> {
-        use Packet::LoginDisconnect;
+    pub async fn login_kick(mut connection: MinecraftConnection, message: Chat) -> Result<()> {
         use proto::LoginDisconnectSpec;
-        let spec = LoginDisconnectSpec {
-            message
-        };
+        use Packet::LoginDisconnect;
+        let spec = LoginDisconnectSpec { message };
         connection.write_packet(LoginDisconnect(spec)).await
-    }
-
-    /// Kicks a player that is in the login state.
-    ///
-    /// # Arguments
-    ///
-    /// * `connection` Connection of the player to kick.
-    /// * `reason` Reason for the kick.
-    pub async fn play_kick(mut connection: MutexGuard<'_, MinecraftConnection>, reason: Chat) -> Result<()> {
-        use Packet::PlayDisconnect;
-        use proto::PlayDisconnectSpec;
-        let spec = PlayDisconnectSpec {
-            reason
-        };
-        connection.write_packet(PlayDisconnect(spec)).await
-    }
-
-    /// Send a message to a client (can be sent to multiple locations on client screen).
-    ///
-    /// # Arguments
-    ///
-    /// * `connection` Arc-Mutex containing the client that the message should be sent to.
-    /// * `message` Chat message to send.
-    /// * `position` where the message should be displayed on the client's screen.
-    pub async fn send_message(
-        mut connection: MutexGuard<'_, MinecraftConnection>,
-        message: Chat,
-        position: ChatPosition,
-    ) -> Result<()> {
-        use super::Packet::PlayServerChatMessage;
-        use proto::PlayServerChatMessageSpec;
-        let spec = PlayServerChatMessageSpec {
-            message,
-            sender: UUID4::random(),
-            position,
-        };
-        let packet = PlayServerChatMessage(spec);
-        connection.write_packet(packet).await
     }
 
     /// Send a chat message to all connected clients.
@@ -452,17 +425,16 @@ impl Server {
     #[allow(unused_must_use)]
     pub async fn broadcast_chat(&mut self, message: Chat) {
         for player in self.players.clone().lock().await.values() {
-            Self::send_message(
-                player.connection.lock().await,
+            player.clone().lock().await.send_message(
                 message.clone(),
-                proto::ChatPosition::ChatBox,
-            )
-            .await;
+                ChatPosition::ChatBox,
+                None,
+            );
         }
     }
 
     /// Handle packets sent by connected clients.
-    async fn handle_packet(&mut self, packet: Packet, sender: Arc<ServerClient>) {
+    async fn handle_packet(&mut self, packet: Packet, sender: MutexGuard<'_, ServerClient>) {
         match packet {
             Packet::PlayClientChatMessage(body) => {
                 self.broadcast_chat(Chat::from_traditional(
@@ -481,5 +453,45 @@ impl Server {
 struct ServerClient {
     name: String,
     uuid: UUID4,
-    connection: Arc<Mutex<MinecraftConnection>>,
+    entity_id: i32,
+    player: Player,
+    connection: MinecraftConnection,
+}
+
+impl ServerClient {
+    /// Sends the client a message to be displayed in the chosen receiving area.
+    ///
+    /// # Arguments
+    ///
+    /// * `message` Message to send (using the Chat format)
+    /// * `position` what receiving area the message should be displayed in
+    /// * `sender` Who sent the message, if none is given then UUID 0 is used.
+    pub async fn send_message(
+        &mut self,
+        message: Chat,
+        position: ChatPosition,
+        sender: Option<UUID4>,
+    ) -> Result<()> {
+        use super::Packet::PlayServerChatMessage;
+        use proto::PlayServerChatMessageSpec;
+        let spec = PlayServerChatMessageSpec {
+            message,
+            sender: sender.unwrap_or(UUID4::from(0)),
+            position,
+        };
+        let packet = PlayServerChatMessage(spec);
+        self.connection.write_packet(packet).await
+    }
+
+    /// Kicks the client.
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` Reason for the kick.
+    pub async fn kick(&mut self, reason: Chat) -> Result<()> {
+        use proto::PlayDisconnectSpec;
+        use Packet::PlayDisconnect;
+        let spec = PlayDisconnectSpec { reason };
+        self.connection.write_packet(PlayDisconnect(spec)).await
+    }
 }

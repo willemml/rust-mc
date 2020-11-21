@@ -15,8 +15,7 @@ pub fn calc_hash(server_id: &str, shared_secret: &[u8], public_key: &[u8]) -> St
     if negative {
         two_complement(&mut hex);
         format!("-{}", remove_zeros(&hex))
-    }
-    else {
+    } else {
         remove_zeros(&hex)
     }
 }

@@ -345,7 +345,7 @@ impl Profile {
 /// * `server_id` String containing the ID of the server tha player is trying to join.
 /// * `shared_secret` The shared secret that the client generated.
 /// * `public_key` The server's public key.
-/// 
+///
 /// # Examples
 ///
 /// ```rust
@@ -368,7 +368,14 @@ pub async fn verify_join(
 ) -> Result<(String, UUID4)> {
     let client = reqwest::Client::new();
     let response = client
-        .get((HAS_JOINED_SERVER_URL.to_owned() + "?username=" + username + "&serverId=" + super::hash::calc_hash(&server_id, shared_secret, public_key).as_str()).as_str())
+        .get(
+            (HAS_JOINED_SERVER_URL.to_owned()
+                + "?username="
+                + username
+                + "&serverId="
+                + super::hash::calc_hash(&server_id, shared_secret, public_key).as_str())
+            .as_str(),
+        )
         .send()
         .await;
     if let Ok(response) = response {
@@ -376,11 +383,11 @@ pub async fn verify_join(
             if let Ok(join) = serde_json::from_str::<ServerJoinResponse>(&text) {
                 return Ok((join.name, join.id));
             }
-            return Err(anyhow::anyhow!("Bad response."))
+            return Err(anyhow::anyhow!("Bad response."));
         }
-        return Err(anyhow::anyhow!("Empty response."))
+        return Err(anyhow::anyhow!("Empty response."));
     };
-    return Err(anyhow::anyhow!("Failed to send request."))
+    return Err(anyhow::anyhow!("Failed to send request."));
 }
 
 /// Minecraft player ID data.

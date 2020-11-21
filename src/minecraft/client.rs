@@ -180,7 +180,8 @@ impl Client {
                     let delayer = client_lock.read_packet();
                     pin_mut!(delayer);
                     if let Ok(packet) =
-                        tokio::time::timeout(std::time::Duration::from_millis(1), &mut delayer).await
+                        tokio::time::timeout(std::time::Duration::from_millis(1), &mut delayer)
+                            .await
                     {
                         packet_read = packet;
                     } else {
@@ -273,9 +274,7 @@ impl Client {
                 let read = self.read_packet().await;
                 if let Ok(packet) = read {
                     match packet {
-                        Packet::LoginSuccess(spec) => {
-                            self.login_success(spec)
-                        }
+                        Packet::LoginSuccess(spec) => self.login_success(spec),
                         _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
                     }
                 } else {
@@ -323,9 +322,7 @@ impl Client {
                                 Packet::LoginSetCompression(body) => {
                                     self.set_compression_threshold(body.threshold.0).await
                                 }
-                                Packet::LoginSuccess(spec) => {
-                                    self.login_success(spec)
-                                }
+                                Packet::LoginSuccess(spec) => self.login_success(spec),
                                 _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
                             }
                         } else {
@@ -367,9 +364,7 @@ impl Client {
                 Packet::LoginSetCompression(body) => {
                     self.set_compression_threshold(body.threshold.0).await
                 }
-                Packet::LoginSuccess(spec) => {
-                    self.login_success(spec)
-                }
+                Packet::LoginSuccess(spec) => self.login_success(spec),
                 _ => Err(anyhow::anyhow!(WRONG_PACKET_ERROR)),
             }
         } else {
