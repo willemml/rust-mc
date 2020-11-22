@@ -27,6 +27,8 @@ pub struct Server {
     status: ServerStatus,
     /// Entity IDs in use.
     used_entity_ids: HashSet<i32>,
+    /// Whether or not players should be banned on death
+    hardcore: bool,
 }
 
 impl Server {
@@ -65,6 +67,7 @@ impl Server {
             status,
             online,
             used_entity_ids: HashSet::new(),
+            hardcore: false
         }
     }
 
@@ -172,6 +175,7 @@ impl Server {
                                             entity_id,
                                         ),
                                         connection: client,
+                                        view_distance: 10
                                     }));
                                     {
                                         for player in connections.lock().await.keys() {
@@ -179,6 +183,12 @@ impl Server {
                                                 let _kick = server_client.lock().await.kick(Chat::from_text("Someone with the same name or UUID as you is already connected.")).await;
                                                 return;
                                             }
+                                        }
+                                    }
+                                    {
+                                        let self_lock = self_join_arc.lock().await;
+                                        if let Err(_) = server_client.lock().await.join(self_lock.hardcore, self_lock.status.players.max).await {
+                                            return;
                                         }
                                     }
                                     let server_client_arc = server_client.clone();
@@ -455,6 +465,7 @@ struct ServerClient {
     uuid: UUID4,
     entity_id: i32,
     player: Player,
+    view_distance: i32,
     connection: MinecraftConnection,
 }
 
@@ -493,5 +504,26 @@ impl ServerClient {
         use Packet::PlayDisconnect;
         let spec = PlayDisconnectSpec { reason };
         self.connection.write_packet(PlayDisconnect(spec)).await
+    }
+
+    pub async fn join(&mut self, is_hardcore: bool, max_players: i32) -> Result<()> {
+        let spec = proto::PlayJoinGameSpec {
+            gamemode: self.player.gamemode.clone(),
+            previous_gamemode: self.player.gamemode.clone(),
+            entity_id: self.player.entity_id,
+            is_hardcore,
+            worlds: mcproto_rs::types::CountedArray::from(vec![String::from("empty")]),
+            dimension_codec: mcproto_rs::types::NamedNbtTag { root: mcproto_rs::nbt::NamedTag { name: String::from("oxide"), payload: mcproto_rs::nbt::Tag::End} },
+            dimension: mcproto_rs::types::NamedNbtTag { root: mcproto_rs::nbt::NamedTag { name: String::from("oxide"), payload: mcproto_rs::nbt::Tag::End} },
+            world_name: String::from("emptyness"),
+            hashed_seed: 0,
+            max_players: max_players.try_into().unwrap_or_default(),
+            view_distance: mcproto_rs::types::VarInt::from(self.view_distance),
+            enable_respawn_screen: false,
+            is_flat: false,
+            is_debug: false,
+            reduced_debug_info: true,
+        };
+        self.connection.write_packet(Packet::PlayJoinGame(spec)).await
     }
 }

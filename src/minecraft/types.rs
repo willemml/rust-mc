@@ -1,3 +1,4 @@
+use super::proto::GameMode;
 use mcproto_rs::types::{ItemStack, Slot};
 use mcproto_rs::uuid::UUID4;
 use std::convert::TryInto;
@@ -23,6 +24,7 @@ pub struct Player {
     pub position: Position,
     pub health: Health,
     pub inventory: PlayerInventory,
+    pub gamemode: GameMode,
 }
 
 impl Player {
@@ -44,6 +46,7 @@ impl Player {
                 saturation: 20,
             },
             inventory: PlayerInventory::new_empty(),
+            gamemode: GameMode::Spectator,
         }
     }
 }
