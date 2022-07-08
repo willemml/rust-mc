@@ -61,7 +61,9 @@ impl PlayerInventory {
     }
 
     pub fn new_empty() -> Self {
-        let items: [Option<ItemStack>; 44] = [None; 44];
+        // Stupid way to initialize an array of None without making Slot implement Copy
+        let nothing: [Option<()>; 44] = [None; 44];
+        let items: [Slot; 44] = nothing.map(|_| None);
         Self { items }
     }
 

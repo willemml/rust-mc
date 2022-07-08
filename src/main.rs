@@ -1,11 +1,11 @@
 #![feature(array_chunks)]
 // Should be disabled when player inventory saving and loading is implemented
-#![feature(const_in_array_repeat_expressions)]
 
 /// Minecraft implementations.
 pub mod minecraft;
 /// Mojang API implementation.
 pub mod mojang;
+// Utilities
 
 pub use minecraft::{client::Client, server::Server, status::StatusChecker};
 pub use mojang::auth;
@@ -17,6 +17,8 @@ use tokio::{
     sync::{mpsc, Mutex},
     task::JoinHandle,
 };
+
+static USE_TEST_CLIENT: bool = false;
 
 /// Main, currently just used to create runtimes start `async_main`.
 fn main() {
@@ -31,25 +33,28 @@ async fn async_main(runtime: Arc<Mutex<Runtime>>) {
     let server = start_server(
         "127.0.0.1:25565".to_string(),
         "Rust MC server testing.".to_string(),
-        false,
+        true,
         runtime.clone(),
     )
     .await;
-    let client = start_client(Ipv4Addr::LOCALHOST, 25565, "rust_mc", runtime.clone()).await;
-    if let Ok((_, client, _)) = client {
-        println!("Successfully connected to localhost:25565");
-        let mut buffer = String::new();
-        let stdin = std::io::stdin();
-        loop {
-            if let Ok(_) = stdin.read_line(&mut buffer) {
-                if let Err(_) = client.lock().await.send_chat_message(&buffer).await {
-                    println!("Failed to send message...")
+
+    if USE_TEST_CLIENT {
+        let client = start_client(Ipv4Addr::LOCALHOST, 25565, "rust_mc", runtime.clone()).await;
+        if let Ok((_, client, _)) = client {
+            println!("Successfully connected to localhost:25565");
+            let mut buffer = String::new();
+            let stdin = std::io::stdin();
+            loop {
+                if let Ok(_) = stdin.read_line(&mut buffer) {
+                    if let Err(_) = client.lock().await.send_chat_message(&buffer).await {
+                        println!("Failed to send message...")
+                    }
+                    buffer.clear();
                 }
-                buffer.clear();
             }
+        } else {
+            println!("Client failed to connect: {}", client.err().unwrap())
         }
-    } else {
-        println!("Client failed to connect: {}", client.err().unwrap())
     }
     server.0.await;
 }

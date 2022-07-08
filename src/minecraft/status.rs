@@ -130,7 +130,7 @@ impl ServerStatus {
             description: self.description.clone(),
             favicon: self.favicon.clone(),
             players: self.players.clone(),
-            version: self.version.clone(),
+            version: Some(self.version.clone()),
         };
         let response_spec = StatusResponseSpec {
             response: status_spec,

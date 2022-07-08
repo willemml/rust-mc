@@ -9,8 +9,10 @@ use tokio::{net::TcpListener, runtime::Runtime};
 
 use super::{connection::MinecraftConnection, proto, status::ServerStatus, types::Player, Packet};
 use anyhow::Result;
-use mcproto_rs::{types::Chat, uuid::UUID4};
+use mcproto_rs::{types::Chat, uuid::UUID4, nbt::{Tag, NamedTag}};
 use proto::ChatPosition;
+
+use openssl::rsa::{Rsa, Padding};
 
 type NameUUID = (String, UUID4);
 type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<Mutex<ServerClient>>>>>;
@@ -185,17 +187,12 @@ impl Server {
                                             }
                                         }
                                     }
-                                    {
-                                        let self_lock = self_join_arc.lock().await;
-                                        if let Err(_) = server_client.lock().await.join(self_lock.hardcore, self_lock.status.players.max).await {
-                                            return;
-                                        }
-                                    }
                                     let server_client_arc = server_client.clone();
                                     let self_loop_arc = self_join_arc.clone();
                                     let packet_loop = async move {
                                         let client_arc = server_client_arc.clone();
                                         let server_arc = self_loop_arc.clone();
+                                        // Loop for processing player packets
                                         loop {
                                             let packet_read: Result<Option<super::Packet>>;
                                             {
@@ -220,6 +217,14 @@ impl Server {
                                             };
                                         }
                                     };
+                                    // Send JoinGame packet to player
+                                    {
+                                        let self_lock = self_join_arc.lock().await;
+                                        if let Err(e) = server_client.lock().await.join(self_lock.hardcore, self_lock.status.players.max).await {
+                                            eprintln!("{:?}", e);
+                                            return;
+                                        }
+                                    }
                                     runtime_arc.lock().await.spawn(packet_loop);
                                     connections
                                         .lock()
@@ -283,18 +288,16 @@ impl Server {
             };
             let mut result = (body.name.clone(), UUID4::random());
             if self.online {
-                let server_id = "                ".to_string();
-                let public_key: &mut [u8] = &mut [0; 16];
-                for mut _i in public_key.iter() {
-                    _i = &rand::random::<u8>();
-                }
+                let server_id = "".to_string();
+                let rsa = Rsa::generate(1024).unwrap();
+                let public_key = rsa.public_key_to_der().unwrap();
                 let verify_token: &mut [u8] = &mut [0; 16];
-                for mut _i in verify_token.iter() {
-                    _i = &rand::random::<u8>();
+                for mut _i in verify_token.iter_mut() {
+                    *_i = rand::random::<u8>();
                 }
                 let encryption_spec = LoginEncryptionRequestSpec {
                     server_id: server_id.clone(),
-                    public_key: CountedArray::from(public_key.to_vec()),
+                    public_key: CountedArray::from(public_key.clone()),
                     verify_token: CountedArray::from(verify_token.to_vec()),
                 };
                 if let Err(error) = client
@@ -305,17 +308,27 @@ impl Server {
                 } else {
                     let response = client.read_next_packet().await;
                     if let Ok(Some(LoginEncryptionResponse(response))) = response {
-                        if response.verify_token == CountedArray::from(verify_token.to_vec()) {
+                        // Decrypt the verify token from the client
+                        let mut decrypted_token: Vec<u8> = vec![0; rsa.size() as usize];
+                        rsa.private_decrypt(&response.verify_token, &mut decrypted_token, Padding::PKCS1).unwrap();
+
+                        // Decrypted the shared secret
+                        let mut shared_secret: Vec<u8> = vec![0; rsa.size() as usize];
+                        rsa.private_decrypt(&response.shared_secret, &mut shared_secret, Padding::PKCS1).unwrap();
+                        let shared_secret = &shared_secret[..16];
+
+                        // Compare decrypted token with the original verify token
+                        if decrypted_token[..16] == verify_token.to_vec() {
                             let verify = auth::verify_join(
                                 &body.name,
                                 server_id,
-                                &response.shared_secret,
-                                public_key,
+                                &shared_secret,
+                                &public_key,
                             )
                             .await;
                             if let Ok(verified) = verify {
                                 if let Err(error) =
-                                    client.enable_encryption(public_key, verify_token)
+                                    client.enable_encryption(&shared_secret, &shared_secret)
                                 {
                                     return Err(error);
                                 }
@@ -329,6 +342,7 @@ impl Server {
                             ));
                         }
                     } else {
+                        println!("{:?}", response);
                         if let Some(error) = response.err() {
                             return Err(error);
                         } else {
@@ -445,6 +459,7 @@ impl Server {
 
     /// Handle packets sent by connected clients.
     async fn handle_packet(&mut self, packet: Packet, sender: MutexGuard<'_, ServerClient>) {
+        println!("Received packet {:?}", packet);
         match packet {
             Packet::PlayClientChatMessage(body) => {
                 self.broadcast_chat(Chat::from_traditional(
@@ -453,7 +468,8 @@ impl Server {
                 ))
                 .await;
             }
-            _ => {}
+            _ => {
+            }
         }
     }
 }
@@ -509,13 +525,13 @@ impl ServerClient {
     pub async fn join(&mut self, is_hardcore: bool, max_players: i32) -> Result<()> {
         let spec = proto::PlayJoinGameSpec {
             gamemode: self.player.gamemode.clone(),
-            previous_gamemode: self.player.gamemode.clone(),
+            previous_gamemode: proto::PreviousGameMode::Previous(self.player.gamemode.clone()),
             entity_id: self.player.entity_id,
             is_hardcore,
-            worlds: mcproto_rs::types::CountedArray::from(vec![String::from("empty")]),
-            dimension_codec: mcproto_rs::types::NamedNbtTag { root: mcproto_rs::nbt::NamedTag { name: String::from("oxide"), payload: mcproto_rs::nbt::Tag::End} },
-            dimension: mcproto_rs::types::NamedNbtTag { root: mcproto_rs::nbt::NamedTag { name: String::from("oxide"), payload: mcproto_rs::nbt::Tag::End} },
-            world_name: String::from("emptyness"),
+            worlds: mcproto_rs::types::CountedArray::from(vec![String::from("world")]),
+            dimension_codec: mcproto_rs::types::NamedNbtTag { root: mcproto_rs::nbt::NamedTag { name: String::from("minecraft:overworld"), payload: mcproto_rs::nbt::Tag::End} },
+            dimension: mcproto_rs::types::NamedNbtTag { root: mcproto_rs::nbt::NamedTag { name: String::from("minecraft:overworld"), payload: mcproto_rs::nbt::Tag::End} },
+            world_name: String::from("world"),
             hashed_seed: 0,
             max_players: max_players.try_into().unwrap_or_default(),
             view_distance: mcproto_rs::types::VarInt::from(self.view_distance),
@@ -524,6 +540,7 @@ impl ServerClient {
             is_debug: false,
             reduced_debug_info: true,
         };
+        println!("Sent join packet");
         self.connection.write_packet(Packet::PlayJoinGame(spec)).await
     }
 }
