@@ -367,14 +367,15 @@ pub async fn verify_join(
     public_key: &[u8],
 ) -> Result<(String, UUID4)> {
     let client = reqwest::Client::new();
+    let url: String = String::from((HAS_JOINED_SERVER_URL.to_owned()
+        + "?username="
+        + username
+        + "&serverId="
+        + super::hash::calc_hash(&server_id, shared_secret, public_key).as_str())
+    .as_str());
     let response = client
         .get(
-            (HAS_JOINED_SERVER_URL.to_owned()
-                + "?username="
-                + username
-                + "&serverId="
-                + super::hash::calc_hash(&server_id, shared_secret, public_key).as_str())
-            .as_str(),
+            &url,
         )
         .send()
         .await;
