@@ -18,13 +18,6 @@ use tokio::{
 
 /// Async main, used for launching and testing server and optional client.
 async fn async_main(runtime: Arc<Mutex<Runtime>>, init_client: bool) {
-    let server = start_server(
-        "127.0.0.1:25565".to_string(),
-        "Rust MC server testing.".to_string(),
-        true,
-    )
-    .await;
-
     if init_client {
         let client = start_client(Ipv4Addr::LOCALHOST, 25565, "rust_mc", runtime.clone()).await;
         if let Ok((_, client, _)) = client {
@@ -43,22 +36,6 @@ async fn async_main(runtime: Arc<Mutex<Runtime>>, init_client: bool) {
             println!("Client failed to connect: {}", client.err().unwrap())
         }
     }
-}
-
-/// Starts a server, mostly for testing.
-async fn start_server(
-    address: String,
-    description: String,
-    online: bool,
-) -> anyhow::Result<()> {
-    let (server, _tx) = MinecraftServer::new(
-        address,
-        description,
-        5,
-        online,
-    );
-
-    server.start().await
 }
 
 type ClientResult = anyhow::Result<(JoinHandle<()>, Arc<Mutex<Client>>, mpsc::Sender<()>)>;

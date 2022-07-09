@@ -4,7 +4,7 @@ use std::{
     sync::Arc, net::SocketAddr,
 };
 
-use tokio::{sync::{mpsc, Mutex, MutexGuard}, net::TcpStream};
+use tokio::{sync::{mpsc, Mutex, MutexGuard}, net::TcpStream, task::JoinHandle};
 use tokio::{net::TcpListener, runtime::Runtime};
 
 use super::{connection::MinecraftConnection, proto, status::ServerStatus, types::Player, Packet};
@@ -19,10 +19,17 @@ type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<Mutex<ServerClient>
 
 /// Represents a Minecraft server.
 pub struct MinecraftServer {
-    /// Clients that have connected.
-    players: ConnectedPlayers,
     /// Address to bind the listener to.
     bind_address: String,
+    /// Tokio runtime. Required for creating threads and having compatibility with mctokio crate
+    runtime: Arc<Mutex<Runtime>>,
+    // MC Runner
+    runner: Arc<Mutex<MCRunner>>,
+}
+
+struct MCRunner {
+    /// Clients that have connected.
+    players: ConnectedPlayers,
     /// Whether or not to make sure players have authenticated with Mojang, also enables packet encryption.
     online: bool,
     /// The server's status.
@@ -35,8 +42,6 @@ pub struct MinecraftServer {
     receiver: mpsc::Receiver<()>,
     /// Whether the server is running
     running: bool,
-    /// Tokio runtime. Required for creating threads and having compatibility with mctokio crate
-    runtime: Arc<Mutex<Runtime>>,
 }
 
 impl MinecraftServer {
@@ -82,17 +87,23 @@ impl MinecraftServer {
         // Create channel to allow for server shutdown in another thread
         let (tx, rx) = mpsc::channel(20);
 
-        (
-            MinecraftServer {
+        let runner = Arc::new(Mutex::new(
+            MCRunner {
                 players: Arc::new(Mutex::new(HashMap::new())),
-                bind_address,
                 status,
                 online,
                 used_entity_ids: HashSet::new(),
                 hardcore: false,
                 receiver: rx,
                 running: false,
+            }
+        ));
+
+        (
+            MinecraftServer {
+                bind_address,
                 runtime,
+                runner,
             },
             tx,
         )
@@ -127,45 +138,49 @@ impl MinecraftServer {
     /// tx.try_lock().send(()); // Stop the server after 1000ms by sending something.
     /// ```
     pub async fn start(
-        self,
-    ) -> Result<()> {
-        let self_mutex: Arc<Mutex<Self>> = Arc::new(Mutex::new(self));
-        let mut listener: TcpListener;
-        let connections: ConnectedPlayers;
+        &self,
+    ) -> Result<JoinHandle<()>> {
+        let runner_mut = self.runner.clone();
 
-        // Bind the socket
-        {
-            let self_lock = self_mutex.lock().await;
-            let bind = TcpListener::bind(self_lock.bind_address.clone()).await;
-            if let Ok(bind) = bind {
-                listener = bind;
-                connections = self_lock.players.clone();
-            } else {
-                println!("{}", bind.err().unwrap());
-                return Err(anyhow::anyhow!(
-                    "Failed to bind to {}",
-                    self_lock.bind_address.clone()
-                ));
-            }
-        }
+        let runtime_server_loop = self.runtime.clone();
 
-        let runtime_server_loop = {
-            let self_lock = self_mutex.lock().await;
-            self_lock.runtime.clone()
-        };
+        let loop_runner_mut = runner_mut.clone();
 
-        let loop_self_mutex = self_mutex.clone();
+        // Set up a channel to communicate error or success
+        let (mut tx, mut rx) = mpsc::channel(32);
+
+        let bind_address = self.bind_address.clone();
 
         // In a new thread, loop while the server is running
         let server_loop = async move {
+            let mut listener: TcpListener;
+            let connections: ConnectedPlayers;
+            {
+                // Bind the socket
+                let self_lock = runner_mut.lock().await;
+                let bind = TcpListener::bind(bind_address.clone()).await;
+                if let Ok(bind) = bind {
+                    listener = bind;
+                    connections = self_lock.players.clone();
+                    tx.send(Ok(())).await.unwrap();
+                } else {
+                    println!("{}", bind.err().unwrap());
+                    tx.send(Err(anyhow::anyhow!(
+                        "Failed to bind to {}",
+                        bind_address.clone()
+                    ))).await.unwrap();
+                    return;
+                }
+            }
+            println!("Started server on {bind_address}");
             // Set server to running
             {
-                let mut self_lock = loop_self_mutex.lock().await;
+                let mut self_lock = loop_runner_mut.lock().await;
                 self_lock.running = true;
             }
             loop {
                 {
-                    let mut self_lock = loop_self_mutex.lock().await;
+                    let mut self_lock = loop_runner_mut.lock().await;
                     let receiver = &mut self_lock.receiver;
                     // Shut the server down if we close the channel
                     if let Err(err) = receiver.try_recv() {
@@ -176,38 +191,49 @@ impl MinecraftServer {
                 }
                 // Listen for incoming clients
                 if let Ok((socket, address)) = listener.accept().await {
-                    let self_join_arc = loop_self_mutex.clone();
+                    let self_join_arc = loop_runner_mut.clone();
                     let connections = connections.clone();
                     let runtime_arc = runtime_server_loop.clone();
                     let join = async move {
-                        MinecraftServer::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
+                        MCRunner::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
                     };
                     runtime_server_loop.lock().await.spawn(join);
                 }
             }
             // Set server to not running
             {
-                let mut self_lock = loop_self_mutex.lock().await;
+                let mut self_lock = loop_runner_mut.lock().await;
                 self_lock.running = false;
             }
         };
 
-        {
-            let self_lock = self_mutex.lock().await;
-            // Spawn server thead
-            self_lock.runtime.lock().await.spawn(server_loop);
+        // Spawn server thead
+        let handle = self.runtime.lock().await.spawn(server_loop);
+        let err = rx.recv().await;
+        match err {
+            Some(e) => {
+                if let Err(e) = e {
+                    Err(e)
+                } else {
+                    Ok(handle)
+                }
+            },
+            None => Err(anyhow::anyhow!(
+                "Unexpected channel shutdown"
+            ))
         }
-        
-        Ok(())
     }
 
     pub async fn stop(&mut self) {
-        if self.running {
-            self.receiver.close();
+        let mut runner = self.runner.lock().await;
+        if runner.running {
+            runner.receiver.close();
         }
     }
+}
 
-    async fn handle_client_connect(self_join_arc: Arc<Mutex<Self>>, runtime_arc: Arc<Mutex<Runtime>>, socket: TcpStream, address: SocketAddr, connections: ConnectedPlayers) {
+impl MCRunner {
+    async fn handle_client_connect(self_join_arc: Arc<Mutex<MCRunner>>, runtime_arc: Arc<Mutex<Runtime>>, socket: TcpStream, address: SocketAddr, connections: ConnectedPlayers) {
         let mut client = MinecraftConnection::from_tcp_stream(socket);
         let handshake = client.handshake(None, None).await;
         if let Ok(result) = handshake {
