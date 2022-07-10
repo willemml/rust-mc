@@ -24,10 +24,10 @@ pub struct MinecraftServer {
     /// Tokio runtime. Required for creating threads and having compatibility with mctokio crate
     runtime: Arc<Mutex<Runtime>>,
     // MC Runner
-    runner: Arc<Mutex<MCRunner>>,
+    runner: Arc<Mutex<ServerRunner>>,
 }
 
-struct MCRunner {
+struct ServerRunner {
     /// Clients that have connected.
     players: ConnectedPlayers,
     /// Whether or not to make sure players have authenticated with Mojang, also enables packet encryption.
@@ -88,7 +88,7 @@ impl MinecraftServer {
         let (tx, rx) = mpsc::channel(20);
 
         let runner = Arc::new(Mutex::new(
-            MCRunner {
+            ServerRunner {
                 players: Arc::new(Mutex::new(HashMap::new())),
                 status,
                 online,
@@ -195,7 +195,7 @@ impl MinecraftServer {
                     let connections = connections.clone();
                     let runtime_arc = runtime_server_loop.clone();
                     let join = async move {
-                        MCRunner::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
+                        ServerRunner::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
                     };
                     runtime_server_loop.lock().await.spawn(join);
                 }
@@ -232,8 +232,8 @@ impl MinecraftServer {
     }
 }
 
-impl MCRunner {
-    async fn handle_client_connect(self_join_arc: Arc<Mutex<MCRunner>>, runtime_arc: Arc<Mutex<Runtime>>, socket: TcpStream, address: SocketAddr, connections: ConnectedPlayers) {
+impl ServerRunner {
+    async fn handle_client_connect(self_join_arc: Arc<Mutex<ServerRunner>>, runtime_arc: Arc<Mutex<Runtime>>, socket: TcpStream, address: SocketAddr, connections: ConnectedPlayers) {
         let mut client = MinecraftConnection::from_tcp_stream(socket);
         let handshake = client.handshake(None, None).await;
         if let Ok(result) = handshake {

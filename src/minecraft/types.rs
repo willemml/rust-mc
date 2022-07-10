@@ -1,5 +1,5 @@
 use super::proto::GameMode;
-use mcproto_rs::types::{ItemStack, Slot};
+use mcproto_rs::types::{Slot};
 use mcproto_rs::uuid::UUID4;
 use std::convert::TryInto;
 

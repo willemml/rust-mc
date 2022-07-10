@@ -5,10 +5,10 @@ use mcproto_rs::{protocol::State, types::CountedArray};
 use std::net::SocketAddr;
 
 use std::sync::Arc;
-use tokio::sync::{
-    mpsc::{error::TryRecvError, Receiver},
+use tokio::{sync::{
+    mpsc::{self, error::TryRecvError, Receiver, Sender},
     Mutex,
-};
+}, runtime::Runtime, task::JoinHandle};
 
 /// Error text when the client is not connected to a server.
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
@@ -16,18 +16,25 @@ const SERVER_NONE_ERROR: &str = "Not connected to server.";
 const WRONG_PACKET_ERROR: &str = "Recieved an unexpected packet.";
 
 /// A Minecraft client, a wrapper for the utilities required to connect to a Minecraft server and perform various activities in said server.
-pub struct Client {
+pub struct MinecraftClient {
     /// The socket address of the server the client will connect to.
     address: SocketAddr,
-    /// The game profile that will be used to authenticate with the server.
-    pub profile: crate::auth::Profile,
-    /// When the client is connect this holds the actual connection to the server.
-    pub(crate) server: Option<MinecraftConnection>,
-    /// Whether or not the client is currently connected to the server.
-    connected: bool,
+    /// Tokio runtime
+    runtime: Arc<Mutex<Runtime>>,
+    // Running instance of the client
+    runner: Arc<Mutex<ClientRunner>>,
 }
 
-impl Client {
+struct ClientRunner {
+    /// The game profile that will be used to authenticate with the server.
+    profile: crate::auth::Profile,
+    /// Whether or not the client is currently connected to the server.
+    connected: bool,
+    /// When the client is connect this holds the actual connection to the server.
+    server: Option<MinecraftConnection>,
+}
+
+impl MinecraftClient {
     /// Returns a Minecraft client that will connect to the given server with the given profile.
     ///
     /// # Arguments
@@ -47,12 +54,18 @@ impl Client {
     ///     Profile::new("rust_mc", "", true),
     /// );
     /// ```
-    pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> Client {
+    pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> MinecraftClient {
+        let runner = Arc::new(Mutex::new(
+            ClientRunner {
+                profile,
+                server: None,
+                connected: false,
+            }
+        ));
         Self {
             address,
-            profile,
-            server: None,
-            connected: false,
+            runtime: Arc::new(Mutex::new(Runtime::new().unwrap())),
+            runner,
         }
     }
 
@@ -75,35 +88,59 @@ impl Client {
     ///
     /// block_on(client.connect()); // Connect the client.
     /// ```
-    pub async fn connect(&mut self) -> Result<()> {
-        let auth = self.profile.authenticate().await;
-        if let Ok(_) = auth {
-            if let Ok(connection) = MinecraftConnection::connect_async(self.address).await {
-                self.server = Some(connection);
-                if let Some(server) = &mut self.server {
-                    if let Ok(_) = server
-                        .handshake(
-                            Some(proto::HandshakeNextState::Login),
-                            Some(self.profile.game_profile.name.clone()),
-                        )
-                        .await
-                    {
-                        self.login().await
-                    } else {
-                        Err(anyhow::anyhow!("Handshaking with server failed."))
-                    }
-                } else {
-                    Err(anyhow::anyhow!("Disconnected."))
-                }
-            } else {
-                self.server = None;
-                Err(anyhow::anyhow!("Failed to connect to server socket."))
+    pub async fn connect(&mut self) -> Result<(JoinHandle<()>, Sender<()>)> {
+        let runner_mut = self.runner.clone();
+
+        let fut = async {
+            let mut runner = runner_mut.lock().await;
+            // Authenticate profile
+            let auth = runner.profile.authenticate().await;
+    
+            // Check if the auth succeeded
+            if let Err(err) = auth {
+                return Err(err);
             }
-        } else {
-            Err(auth.err().unwrap())
-        }
+    
+            // Create a connection that can be used to connect to the server
+            let connection = MinecraftConnection::connect_async(self.address).await?;
+    
+            // Save our connection
+            runner.server = Some(connection);
+            
+            let profile = runner.profile.game_profile.name.clone();
+
+            // Perform a full handshake with the server
+            let server = runner.server.as_mut().unwrap();
+            server.handshake(
+                Some(proto::HandshakeNextState::Login),
+                Some(profile),
+            ).await?;
+            // Do the login procedure
+            runner.login().await
+        };
+        // Start the TCP connection in the tokio runtime. Check for errors
+        let mut runtime = self.runtime.lock().await;
+        runtime.block_on(fut)?;
+
+        // Create channels for communicating to the client
+        let (tx, rx) = mpsc::channel(20);
+
+        // Start the client loop in a new thread
+        let loop_runner_mut = self.runner.clone();
+        let handle = runtime.spawn(async move {
+            ClientRunner::start_loop(loop_runner_mut, rx).await;
+        });
+        
+        Ok((handle, tx))
     }
 
+    pub async fn send_chat_message(&self, msg: &str) {
+        let mut runner = self.runner.lock().await;
+        runner.send_chat_message(msg).await.unwrap();
+    }
+}
+
+impl ClientRunner {
     /// Spawns a thread that reads packets and tells the client's packet handler about them until told to stop
     /// If the client is not connected the thread will not do anything and will die.
     ///
@@ -164,7 +201,7 @@ impl Client {
     ///
     /// tx.try_send(()); // Stop the packet read loop.
     /// ```
-    pub async fn start_loop(client: Arc<Mutex<Self>>, mut receiver: Receiver<()>) {
+    async fn start_loop(client: Arc<Mutex<Self>>, mut receiver: Receiver<()>) {
         let client_arc = client.clone();
         loop {
             if let Err(err) = receiver.try_recv() {
@@ -220,9 +257,9 @@ impl Client {
     ///
     /// block_on(client.send_chat_message("Hello!".to_string())); // Send the chat message.
     /// ```
-    pub async fn send_chat_message(&mut self, message: &String) -> Result<()> {
+    pub async fn send_chat_message(&mut self, message: &str) -> Result<()> {
         let spec = proto::PlayClientChatMessageSpec {
-            message: message.clone(),
+            message: message.to_string(),
         };
         self.send_packet(Packet::PlayClientChatMessage(spec)).await
     }
