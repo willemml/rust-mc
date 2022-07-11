@@ -1,6 +1,5 @@
 use super::{connection::MinecraftConnection, proto, Packet};
 use anyhow::Result;
-use futures::pin_mut;
 use mcproto_rs::{protocol::State, types::CountedArray};
 use std::net::SocketAddr;
 
@@ -8,7 +7,9 @@ use std::sync::Arc;
 use tokio::{sync::{
     mpsc::{self, error::TryRecvError, Receiver, Sender},
     Mutex,
-}, runtime::Runtime, task::JoinHandle};
+}, runtime::Runtime, task::JoinHandle, join};
+
+use super::server::PacketListener;
 
 /// Error text when the client is not connected to a server.
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
@@ -23,6 +24,7 @@ pub struct MinecraftClient {
     runtime: Arc<Mutex<Runtime>>,
     /// Running instance of the client
     runner: Arc<Mutex<ClientRunner>>,
+    packet_listeners: Arc<Mutex<Vec<PacketListener>>>,
 }
 
 struct ClientRunner {
@@ -32,6 +34,7 @@ struct ClientRunner {
     connected: bool,
     /// When the client is connect this holds the actual connection to the server.
     server: Option<MinecraftConnection>,
+    packet_send: Option<mpsc::Sender<Packet>>,
 }
 
 impl MinecraftClient {
@@ -45,12 +48,12 @@ impl MinecraftClient {
     /// # Examples
     ///
     /// ```rust
-    /// use rust_mc::minecraft::client::Client;
+    /// use rust_mc::minecraft::client::MinecraftClient;
     /// use rust_mc::mojang::auth::Profile;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     ///
-    /// let mut client = Client::new(
-    ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
+    /// let mut client = MinecraftClient::new(
+    ///     "127.0.0.1:25565".parse().unwrap(),
     ///     Profile::new("rust_mc", "", true),
     /// );
     /// ```
@@ -60,12 +63,14 @@ impl MinecraftClient {
                 profile,
                 server: None,
                 connected: false,
+                packet_send: None,
             }
         ));
         Self {
             address,
             runtime: Arc::new(Mutex::new(Runtime::new().unwrap())),
             runner,
+            packet_listeners: Arc::new(Mutex::new(vec![])),
         }
     }
 
@@ -76,13 +81,15 @@ impl MinecraftClient {
     /// This example requires a Minecraft server to be running on localhost:25565.
     ///
     /// ```rust
-    /// use rust_mc::minecraft::client::Client;
+    /// use rust_mc::minecraft::client::MinecraftClient;
     /// use rust_mc::mojang::auth::Profile;
     /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use std::sync::Arc;
+    /// use tokio::sync::Mutex;
     /// use futures::executor::block_on;
     ///
-    /// let mut client = Client::new(
-    ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
+    /// let mut client = MinecraftClient::new(
+    ///     "127.0.0.1:25565".parse().unwrap(),
     ///     Profile::new("rust_mc", "", true),
     /// );
     ///
@@ -124,82 +131,82 @@ impl MinecraftClient {
         // Create channels for communicating to the client
         let (tx, rx) = mpsc::channel(20);
 
-        // Start the client loop in a new thread
+        let (send_packet, receive_packet) = mpsc::channel(1024);
+        {
+            self.runner.lock().await.packet_send = Some(send_packet);
+        }
+
+        let packet_listeners = self.packet_listeners.clone();
         let loop_runner_mut = self.runner.clone();
-        let handle = runtime.spawn(async move {
+
+        let main_client_loop = async move {
             ClientRunner::start_loop(loop_runner_mut, rx).await;
+        };
+        let packet_listen_loop = async move {
+            let mut recv = receive_packet;
+            let mut pls = packet_listeners;
+            loop {
+                MinecraftClient::receive_packet(&mut pls, &mut recv).await;
+            }
+        };
+
+        // Start the client loop in a new thread
+        let handle = runtime.spawn(async move {
+            // Use a single thread to process receiving packets and listening here for packets
+            join!(main_client_loop, packet_listen_loop);
         });
         
         Ok((handle, tx))
     }
 
+    /// Tells the client to send a chat message
+    ///
+    /// # Arguments
+    ///
+    /// * `message` Message the client should send to the server.
+    ///
+    /// # Examples
+    ///
+    /// This example requires a Minecraft server to be running on localhost:25565.
+    ///
+    /// ```rust
+    /// use rust_mc::minecraft::client::MinecraftClient;
+    /// use rust_mc::mojang::auth::Profile;
+    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    /// use futures::executor::block_on;
+    ///
+    /// let mut client = MinecraftClient::new(
+    ///     "127.0.0.1:25565".parse().unwrap(),
+    ///     Profile::new("rust_mc", "", true),
+    /// );
+    ///
+    /// block_on(client.connect()); // Connect the client before sending the message.
+    ///
+    /// block_on(client.send_chat_message("Hello!")); // Send the chat message. Assumes success of connection
+    /// ```
     pub async fn send_chat_message(&self, msg: &str) {
         let mut runner = self.runner.lock().await;
         runner.send_chat_message(msg).await.unwrap();
     }
+
+    /// Register a packet listener to intercept packets received by the server
+    pub async fn on_receive_packet(&self, cb: PacketListener) {
+        self.packet_listeners.lock().await.push(cb);
+    }
+
+    /// Attempts to receive a packet from the ClientRunner and calls the packet listeners
+    async fn receive_packet(packet_listeners: &mut Arc<Mutex<Vec<PacketListener>>>, recv: &mut mpsc::Receiver<Packet>) {
+        if let Some(packet) = recv.recv().await {
+            let pl_lock = packet_listeners.lock().await;
+            pl_lock.iter().for_each(|f| {
+                f(&packet);
+            })
+        }
+    }
 }
 
 impl ClientRunner {
-    /// Spawns a thread that reads packets and tells the client's packet handler about them until told to stop
-    /// If the client is not connected the thread will not do anything and will die.
-    ///
-    /// # Arguments
-    ///
-    /// * `client` Minecraft client to read packets from.
-    /// * `receiver` rx side of a `channel`, when it receives any message or is disconnected the packet read loop is stopped.
-    ///
-    /// # Examples
-    ///
-    /// These examples require a Minecraft server to be running on localhost:25565.
-    ///
-    /// ```rust
-    /// use rust_mc::minecraft::client::Client;
-    /// use rust_mc::mojang::auth::Profile;
-    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    /// use tokio::sync::mpsc::channel;
-    /// use futures::executor::block_on;
-    ///
-    /// let mut client = Client::new(
-    ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///     Profile::new("rust_mc", "", true),
-    /// );
-    ///
-    /// block_on(client.connect()); // Connect the client before starting the loop.
-    /// let (tx, rx) = mpsc::channel(20);
-    ///
-    /// Client::start_loop(Arc::new(Mutex::new(client)), rx); // Start the packet read loop.
-    ///
-    /// tx.try_send(()); // Stop the packet read loop.
-    /// ```
-    ///
-    /// If you want to be able to perform operations on the client (such as sending chat messages) from outside of the packet loop and handler:
-    ///
-    /// ```rust
-    /// use rust_mc::minecraft::client::Client;
-    /// use rust_mc::mojang::auth::Profile;
-    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    /// use tokio::sync::mpsc::channel;
-    /// use futures::executor::block_on;
-    ///
-    /// let mut client = Client::new(
-    ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///     Profile::new("rust_mc", "", true),
-    /// );
-    ///
-    /// block_on(client.connect()); // Connect the client before starting the loop.
-    /// let (tx, rx) = mpsc::channel(20);
-    ///
-    /// let client_arc = Arc::new(Mutex::new(client)); // Create the client arc mutex before calling the function.
-    /// let client_arc_clone = client_arc.clone();  // Clone the client arc before passing it so that you have one in this scope.
-    ///
-    /// Client::start_loop(client_arc_clone, rx); // Start the packet read loop.
-    ///
-    /// // Perform some operations that require the client.
-    /// let player_name = block_on(client_arc.lock()).profile.game_profile.name.clone();
-    /// println!("Client is connected as {}.", player_name);
-    ///
-    /// tx.try_send(()); // Stop the packet read loop.
-    /// ```
+    /// Starts the client loop and listens for incoming server packets
     async fn start_loop(client: Arc<Mutex<Self>>, mut receiver: Receiver<()>) {
         let client_arc = client.clone();
         loop {
@@ -215,6 +222,7 @@ impl ClientRunner {
                 }
                 let packet_read: Result<super::Packet>;
                 {
+                    // Attempt to read a client packet. Only attempt for 5 ms to allow others to take the lock
                     let delayer = client_lock.read_packet();
                     if let Ok(packet) =
                         tokio::time::timeout(std::time::Duration::from_millis(5), delayer)
@@ -225,6 +233,7 @@ impl ClientRunner {
                         continue;
                     }
                 }
+                // Process a packet if deserialized correctly
                 match packet_read {
                     Ok(packet) => client_lock.handle_packet(packet).await,
                     Err(e) => {
@@ -235,31 +244,6 @@ impl ClientRunner {
         }
     }
 
-    /// Tells the client to send a chat message
-    ///
-    /// # Arguments
-    ///
-    /// * `message` Message the client should send to the server.
-    ///
-    /// # Examples
-    ///
-    /// This example requires a Minecraft server to be running on localhost:25565.
-    ///
-    /// ```rust
-    /// use rust_mc::minecraft::client::Client;
-    /// use rust_mc::mojang::auth::Profile;
-    /// use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    /// use futures::executor::block_on;
-    ///
-    /// let mut client = Client::new(
-    ///     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 25565),
-    ///     Profile::new("rust_mc", "", true),
-    /// );
-    ///
-    /// block_on(client.connect()); // Connect the client before sending the message.
-    ///
-    /// block_on(client.send_chat_message("Hello!".to_string())); // Send the chat message.
-    /// ```
     async fn send_chat_message(&mut self, message: &str) -> Result<()> {
         let spec = proto::PlayClientChatMessageSpec {
             message: message.to_string(),
@@ -414,7 +398,7 @@ impl ClientRunner {
 
     /// Handle received packets.
     async fn handle_packet(&mut self, packet: Packet) {
-        match packet {
+        match &packet {
             Packet::PlayServerChatMessage(body) => {
                 if body.sender != self.profile.game_profile.id {
                     if let Some(message) = body.message.to_traditional() {
@@ -426,5 +410,9 @@ impl ClientRunner {
             }
             _ => {}
         };
+
+        if let Some(sender) = &mut self.packet_send {
+            sender.send(packet).await.unwrap();
+        }
     }
 }

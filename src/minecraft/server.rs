@@ -19,7 +19,9 @@ use openssl::rsa::{Rsa, Padding};
 type NameUUID = (String, UUID4);
 type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<Mutex<ServerClient>>>>>;
 /// Callback function that acts on a packet
-type PacketListener = fn(&Packet) -> ();
+
+
+pub type PacketListener = fn(&Packet) -> ();
 
 /// Represents a Minecraft server.
 pub struct MinecraftServer {
@@ -63,13 +65,18 @@ impl MinecraftServer {
     /// # Examples
     ///
     /// ```rust
-    /// use rust_mc::minecraft::server::Server;
+    /// use rust_mc::minecraft::server::MinecraftServer;
     ///
-    /// let server = Server::new("127.0.0.1:25565", false);
+    /// let server = MinecraftServer::new(
+    ///     "127.0.0.1:25565",
+    ///     "Rust MC Server",
+    ///     5,
+    ///     false,
+    /// );
     /// ```
     pub fn new(
-        bind_address: String,
-        description: String,
+        bind_address: &str,
+        description: &str,
         max_players: i32,
         online: bool
     ) -> (Self, mpsc::Sender<()>) {
@@ -110,7 +117,7 @@ impl MinecraftServer {
 
         (
             MinecraftServer {
-                bind_address,
+                bind_address: bind_address.to_string(),
                 runtime,
                 runner,
                 packet_listeners: Arc::new(Mutex::new(vec![])),
@@ -131,21 +138,17 @@ impl MinecraftServer {
     /// # Examples
     ///
     /// ```rust
-    /// use rust_mc::minecraft::server::Server;
-    /// use std::sync::Arc;
-    /// use tokio::{
-    ///     runtime::Runtime,
-    ///     sync::{mpsc, Mutex}
-    /// };
+    /// use rust_mc::minecraft::server::MinecraftServer;
+    /// use futures::executor::block_on;
     ///
-    /// let server = Arc::new(Mutex::new(Server::new("127.0.0.1:25565", false)));
-    /// let (tx, rx) = mpsc::channel(20);
-    /// let runtime = Arc::new(Mutex::new(Runtime::new().unwrap()));
+    /// let (server, _tx) = MinecraftServer::new(
+    ///     "127.0.0.1:25565",
+    ///     "Rust MC Server",
+    ///     5,
+    ///     false,
+    /// );
     ///
-    /// Server::start(server, rx, runtime); // Start the server.
-    ///
-    /// std::thread::delay(std::time::Duration::from_millis(1000));
-    /// tx.try_lock().send(()); // Stop the server after 1000ms by sending something.
+    /// block_on(server.start()).unwrap(); // Start the server.
     /// ```
     pub async fn start(&self) -> Result<JoinHandle<()>> {
         let runner_mut = self.runner.clone();
@@ -531,7 +534,6 @@ impl ServerRunner {
     /// Handle status requests by a client.
     async fn handle_status(&mut self, mut client: MinecraftConnection) -> anyhow::Result<()> {
         use super::Packet::{StatusPing, StatusPong, StatusRequest};
-        use mcproto_rs::status::StatusPlayerSampleSpec;
         use proto::StatusPongSpec;
         let second = &mut client.read_next_packet().await;
         if let Ok(second) = second {
@@ -583,7 +585,7 @@ impl ServerRunner {
     ///
     /// * `connection` Connection of the player to kick.
     /// * `message` Message to send the player (reason).
-    pub async fn login_kick(mut connection: MinecraftConnection, message: Chat) -> Result<()> {
+    async fn login_kick(mut connection: MinecraftConnection, message: Chat) -> Result<()> {
         use proto::LoginDisconnectSpec;
         use Packet::LoginDisconnect;
         let spec = LoginDisconnectSpec { message };
@@ -596,7 +598,7 @@ impl ServerRunner {
     ///
     /// * `message` Chat message to send.
     #[allow(unused_must_use)]
-    pub async fn broadcast_chat(&mut self, message: Chat) {
+    async fn broadcast_chat(&mut self, message: Chat) {
         for player in self.players.clone().lock().await.values() {
             player.clone().lock().await.send_message(
                 message.clone(),

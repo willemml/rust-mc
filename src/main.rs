@@ -8,15 +8,15 @@ fn main() {
 
 async fn async_main() {
     let (server, _tx) = MinecraftServer::new(
-        "127.0.0.1:25565".to_string(),
-        "Rust test MC server".to_string(),
+        "127.0.0.1:25565",
+        "Rust test MC server",
         5,
         false,
     );
     let server_handle = server.start().await.unwrap();
 
     server.on_receive_packet(|p| {
-        println!("[Listener1] Packet received: {:?}", p);
+        println!("[Server List] Packet received: {:?}", p);
     }).await;
 
     let mut client = MinecraftClient::new(
@@ -24,8 +24,10 @@ async fn async_main() {
         auth::Profile::new("TestUser", "", true),
     );
     let (_handle, _txc) = client.connect().await.unwrap();
+    client.on_receive_packet(|p| {
+        println!("[Client List] Packet received: {:?}", p);
+    }).await;
     client.send_chat_message("Test message").await;
-    println!("Finish sending chat message");
 
     server_handle.await.unwrap();
 }
