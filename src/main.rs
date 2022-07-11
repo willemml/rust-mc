@@ -15,12 +15,17 @@ async fn async_main() {
     );
     let server_handle = server.start().await.unwrap();
 
+    server.on_receive_packet(|p| {
+        println!("[Listener1] Packet received: {:?}", p);
+    }).await;
+
     let mut client = MinecraftClient::new(
         "127.0.0.1:25565".parse().unwrap(),
         auth::Profile::new("TestUser", "", true),
     );
-    client.connect().await.unwrap();
+    let (_handle, _txc) = client.connect().await.unwrap();
     client.send_chat_message("Test message").await;
+    println!("Finish sending chat message");
 
     server_handle.await.unwrap();
 }

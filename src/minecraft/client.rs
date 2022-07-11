@@ -21,7 +21,7 @@ pub struct MinecraftClient {
     address: SocketAddr,
     /// Tokio runtime
     runtime: Arc<Mutex<Runtime>>,
-    // Running instance of the client
+    /// Running instance of the client
     runner: Arc<Mutex<ClientRunner>>,
 }
 
@@ -99,8 +99,7 @@ impl MinecraftClient {
             // Check if the auth succeeded
             if let Err(err) = auth {
                 return Err(err);
-            }
-    
+            }    
             // Create a connection that can be used to connect to the server
             let connection = MinecraftConnection::connect_async(self.address).await?;
     
@@ -206,18 +205,19 @@ impl ClientRunner {
         loop {
             if let Err(err) = receiver.try_recv() {
                 if err == TryRecvError::Closed {
+                    println!("[Client] Closed receiver connection");
                     break;
                 }
-                let client_lock = &mut client_arc.lock().await;
+                let mut client_lock = client_arc.lock().await;
                 if !client_lock.connected {
+                    println!("[Client] Disconnected from server");
                     break;
                 }
                 let packet_read: Result<super::Packet>;
                 {
                     let delayer = client_lock.read_packet();
-                    pin_mut!(delayer);
                     if let Ok(packet) =
-                        tokio::time::timeout(std::time::Duration::from_millis(1), &mut delayer)
+                        tokio::time::timeout(std::time::Duration::from_millis(5), delayer)
                             .await
                     {
                         packet_read = packet;
@@ -225,9 +225,12 @@ impl ClientRunner {
                         continue;
                     }
                 }
-                if let Ok(packet) = packet_read {
-                    client_lock.handle_packet(packet).await;
-                };
+                match packet_read {
+                    Ok(packet) => client_lock.handle_packet(packet).await,
+                    Err(e) => {
+                        println!("[Client] {e}")
+                    },
+                }
             }
         }
     }
@@ -257,7 +260,7 @@ impl ClientRunner {
     ///
     /// block_on(client.send_chat_message("Hello!".to_string())); // Send the chat message.
     /// ```
-    pub async fn send_chat_message(&mut self, message: &str) -> Result<()> {
+    async fn send_chat_message(&mut self, message: &str) -> Result<()> {
         let spec = proto::PlayClientChatMessageSpec {
             message: message.to_string(),
         };
@@ -415,7 +418,7 @@ impl ClientRunner {
             Packet::PlayServerChatMessage(body) => {
                 if body.sender != self.profile.game_profile.id {
                     if let Some(message) = body.message.to_traditional() {
-                        println!("{}", message);
+                        println!("[Client] {}", message);
                     } else {
                         println!("Raw message: {:?}", body);
                     }
