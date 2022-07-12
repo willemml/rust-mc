@@ -6,7 +6,7 @@ use std::{
 
 use mcproto_rs::status::StatusPlayerSampleSpec;
 
-use tokio::{sync::{mpsc, Mutex, MutexGuard}, net::TcpStream, task::JoinHandle};
+use tokio::{sync::{mpsc, Mutex, MutexGuard}, net::TcpStream, task::JoinHandle, runtime::Handle};
 use tokio::{net::TcpListener, runtime::Runtime};
 
 use super::{connection::MinecraftConnection, proto, status::ServerStatus, types::Player, Packet};
@@ -28,7 +28,7 @@ pub struct MinecraftServer {
     /// Address to bind the listener to.
     bind_address: String,
     /// Tokio runtime. Required for creating threads and having compatibility with mctokio crate
-    runtime: Arc<Mutex<Runtime>>,
+    runtime: Runtime,
     // MC Runner
     runner: Arc<Mutex<ServerRunner>>,
     /// List of packet listeners
@@ -95,9 +95,7 @@ impl MinecraftServer {
             favicon: None,
         };
 
-        let runtime = Arc::new(Mutex::new(
-            Runtime::new().unwrap()
-        ));
+        let runtime = Runtime::new().unwrap();
         
         // Create channel to allow for server shutdown in another thread
         let (tx, rx) = mpsc::channel(20);
@@ -153,7 +151,7 @@ impl MinecraftServer {
     pub async fn start(&self) -> Result<JoinHandle<()>> {
         let runner_mut = self.runner.clone();
 
-        let runtime_server_loop = self.runtime.clone();
+        let runtime_server_loop = self.runtime.handle().clone();
 
         let loop_runner_mut = runner_mut.clone();
 
@@ -218,7 +216,7 @@ impl MinecraftServer {
                         let join = async move {
                             ServerRunner::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
                         };
-                        runtime_server_loop.lock().await.spawn(join);
+                        runtime_server_loop.spawn(join);
                     }
                 }
             };
@@ -244,7 +242,7 @@ impl MinecraftServer {
         };
 
         // Spawn server thead
-        let handle = self.runtime.lock().await.spawn(server_loop);
+        let handle = self.runtime.handle().spawn(server_loop);
         let err = rx.recv().await;
         match err {
             Some(e) => {
@@ -289,7 +287,7 @@ impl MinecraftServer {
 }
 
 impl ServerRunner {
-    async fn handle_client_connect(self_join_arc: Arc<Mutex<ServerRunner>>, runtime_arc: Arc<Mutex<Runtime>>, socket: TcpStream, address: SocketAddr, connections: ConnectedPlayers) {
+    async fn handle_client_connect(self_join_arc: Arc<Mutex<ServerRunner>>, runtime_arc: Handle, socket: TcpStream, address: SocketAddr, connections: ConnectedPlayers) {
         let mut client = MinecraftConnection::from_tcp_stream(socket);
         let handshake = client.handshake(None, None).await;
         if let Ok(result) = handshake {
@@ -383,7 +381,7 @@ impl ServerRunner {
                             return;
                         }
                     }
-                    runtime_arc.lock().await.spawn(packet_loop);
+                    runtime_arc.spawn(packet_loop);
                     connections
                         .lock()
                         .await

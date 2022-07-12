@@ -21,7 +21,7 @@ pub struct MinecraftClient {
     /// The socket address of the server the client will connect to.
     address: SocketAddr,
     /// Tokio runtime
-    runtime: Arc<Mutex<Runtime>>,
+    runtime: Runtime,
     /// Running instance of the client
     runner: Arc<Mutex<ClientRunner>>,
     packet_listeners: Arc<Mutex<Vec<PacketListener>>>,
@@ -68,7 +68,7 @@ impl MinecraftClient {
         ));
         Self {
             address,
-            runtime: Arc::new(Mutex::new(Runtime::new().unwrap())),
+            runtime: Runtime::new().unwrap(),
             runner,
             packet_listeners: Arc::new(Mutex::new(vec![])),
         }
@@ -125,8 +125,7 @@ impl MinecraftClient {
             runner.login().await
         };
         // Start the TCP connection in the tokio runtime. Check for errors
-        let mut runtime = self.runtime.lock().await;
-        runtime.block_on(fut)?;
+        self.runtime.handle().block_on(fut)?;
 
         // Create channels for communicating to the client
         let (tx, rx) = mpsc::channel(20);
@@ -151,7 +150,7 @@ impl MinecraftClient {
         };
 
         // Start the client loop in a new thread
-        let handle = runtime.spawn(async move {
+        let handle = self.runtime.spawn(async move {
             // Use a single thread to process receiving packets and listening here for packets
             join!(main_client_loop, packet_listen_loop);
         });
