@@ -32,7 +32,7 @@ struct ClientRunner {
     profile: crate::auth::Profile,
     /// Whether or not the client is currently connected to the server.
     connected: bool,
-    /// When the client is connect this holds the actual connection to the server.
+    /// When the client is connected, this holds the actual connection to the server.
     server: Option<MinecraftConnection>,
     packet_send: Option<mpsc::Sender<Packet>>,
 }
