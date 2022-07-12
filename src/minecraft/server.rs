@@ -181,7 +181,7 @@ impl MinecraftServer {
                     connections = self_lock.players.clone();
                     tx.send(Ok(())).await.unwrap();
                 } else {
-                    println!("{}", bind.err().unwrap());
+                    error!("{}", bind.err().unwrap());
                     tx.send(Err(anyhow::anyhow!(
                         "Failed to bind to {}",
                         bind_address.clone()
@@ -189,7 +189,7 @@ impl MinecraftServer {
                     return;
                 }
             }
-            println!("Started server on {bind_address}");
+            println!("[Server] Started server on {bind_address}");
             // Set server to running
             {
                 let mut self_lock = loop_runner_mut.lock().await;
@@ -291,7 +291,7 @@ impl ServerRunner {
         let mut client = MinecraftConnection::from_tcp_stream(socket);
         let handshake = client.handshake(None, None).await;
         if let Ok(result) = handshake {
-            println!(
+            info!(
                 "{} handshake with {} successful.",
                 result.name(),
                 address.to_string()
@@ -377,7 +377,7 @@ impl ServerRunner {
                     {
                         let self_lock = self_join_arc.lock().await;
                         if let Err(e) = server_client.lock().await.join(self_lock.hardcore, self_lock.status.players.max).await {
-                            eprintln!("{:?}", e);
+                            error!("{:?}", e);
                             return;
                         }
                     }
@@ -386,9 +386,9 @@ impl ServerRunner {
                         .lock()
                         .await
                         .insert(Arc::new((login.0, login.1)), server_client);
-                    println!("{} successfully logged in.", address.to_string());
+                    println!("[Server] {} successfully logged in.", address.to_string());
                 } else {
-                    println!(
+                    error!(
                         "{} failed to log in: {}",
                         address.to_string(),
                         login.err().unwrap()
@@ -400,16 +400,16 @@ impl ServerRunner {
                     status = self_join_arc.lock().await.handle_status(client).await;
                 }
                 if let Ok(_) = status {
-                    println!(
+                    info!(
                         "{} successfully got server status.",
                         address.to_string()
                     )
                 } else {
-                    println!("{} failed to get server status.", address.to_string())
+                    info!("{} failed to get server status.", address.to_string())
                 }
             }
         } else {
-            println!(
+            info!(
                 "Handshake with {} failed: {}",
                 address.to_string(),
                 handshake.err().unwrap()
@@ -492,7 +492,7 @@ impl ServerRunner {
                             ));
                         }
                     } else {
-                        println!("{:?}", response);
+                        debug!("{:?}", response);
                         if let Some(error) = response.err() {
                             return Err(error);
                         } else {
@@ -608,7 +608,7 @@ impl ServerRunner {
 
     /// Handle packets sent by connected clients.
     async fn handle_packet(&mut self, packet: Packet, sender: MutexGuard<'_, ServerClient>) {
-        println!("Received a packet {:?}", packet);
+        debug!("[Server] Received a packet {:?}", packet);
 
         match &packet {
             Packet::PlayClientChatMessage(body) => {
@@ -676,7 +676,6 @@ impl ServerClient {
             position,
         };
         let packet = PlayServerChatMessage(spec);
-        // println!("[Server] Packet: {:?}", packet);
         self.connection.write_packet(packet).await
     }
 
@@ -710,7 +709,7 @@ impl ServerClient {
             is_debug: false,
             reduced_debug_info: true,
         };
-        println!("Sent join packet");
+        debug!("[Server] Sent join packet");
         self.connection.write_packet(Packet::PlayJoinGame(spec)).await
     }
 }

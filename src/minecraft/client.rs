@@ -236,7 +236,7 @@ impl ClientRunner {
                 match packet_read {
                     Ok(packet) => client_lock.handle_packet(packet).await,
                     Err(e) => {
-                        println!("[Client] {e}")
+                        error!("[Client] {e}")
                     },
                 }
             }
@@ -401,9 +401,9 @@ impl ClientRunner {
             Packet::PlayServerChatMessage(body) => {
                 if body.sender != self.profile.game_profile.id {
                     if let Some(message) = body.message.to_traditional() {
-                        println!("[Client] {}", message);
+                        debug!("[Client] {}", message);
                     } else {
-                        println!("Raw message: {:?}", body);
+                        debug!("[Client] Raw message: {:?}", body);
                     }
                 }
             }
