@@ -6,7 +6,7 @@ use std::{
 
 use mcproto_rs::status::StatusPlayerSampleSpec;
 
-use tokio::{sync::{mpsc, Mutex, MutexGuard}, net::TcpStream, task::JoinHandle, runtime::Handle};
+use tokio::{sync::{mpsc, Mutex, MutexGuard, broadcast}, net::TcpStream, task::JoinHandle, runtime::Handle};
 use tokio::{net::TcpListener, runtime::Runtime};
 
 use super::{connection::MinecraftConnection, proto, status::ServerStatus, types::Player, Packet};
@@ -18,10 +18,6 @@ use openssl::rsa::{Rsa, Padding};
 
 type NameUUID = (String, UUID4);
 type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<Mutex<ServerClient>>>>>;
-/// Callback function that acts on a packet
-
-
-pub type PacketListener = fn(&Packet) -> ();
 
 /// Represents a Minecraft server.
 pub struct MinecraftServer {
@@ -29,10 +25,8 @@ pub struct MinecraftServer {
     bind_address: String,
     /// Tokio runtime. Required for creating threads and having compatibility with mctokio crate
     runtime: Runtime,
-    // MC Runner
+    /// MC Runner
     runner: Arc<Mutex<ServerRunner>>,
-    /// List of packet listeners
-    packet_listeners: Arc<Mutex<Vec<PacketListener>>>,
 }
 
 struct ServerRunner {
@@ -50,8 +44,8 @@ struct ServerRunner {
     receiver: mpsc::Receiver<()>,
     /// Whether the server is running
     running: bool,
-    /// Sends packets to the MinecraftServer
-    packet_send: Option<mpsc::Sender<Packet>>,
+    /// Broadcast sending packets to any attached receivers
+    packet_tx: broadcast::Sender<Packet>,
 }
 
 impl MinecraftServer {
@@ -100,6 +94,8 @@ impl MinecraftServer {
         // Create channel to allow for server shutdown in another thread
         let (tx, rx) = mpsc::channel(20);
 
+        let (packet_tx, _) = broadcast::channel(16);
+
         let runner = Arc::new(Mutex::new(
             ServerRunner {
                 players: Arc::new(Mutex::new(HashMap::new())),
@@ -109,7 +105,7 @@ impl MinecraftServer {
                 hardcore: false,
                 receiver: rx,
                 running: false,
-                packet_send: None,
+                packet_tx,
             }
         ));
 
@@ -118,7 +114,6 @@ impl MinecraftServer {
                 bind_address: bind_address.to_string(),
                 runtime,
                 runner,
-                packet_listeners: Arc::new(Mutex::new(vec![])),
             },
             tx,
         )
@@ -159,14 +154,6 @@ impl MinecraftServer {
         let (mut tx, mut rx) = mpsc::channel(32);
 
         let bind_address = self.bind_address.clone();
-        
-        // Receives packets from the ServerRunner
-        let (packet_send, packet_receive) = mpsc::channel(1024);
-        {
-            self.runner.lock().await.packet_send = Some(packet_send);
-        }
-
-        let packet_listeners = self.packet_listeners.clone();
 
         // In a new thread, loop while the server is running
         let server_loop = async move {
@@ -196,43 +183,28 @@ impl MinecraftServer {
                 self_lock.running = true;
             }
             // Main server loop that listens for incoming clients
-            let main_server_loop = async {
-                loop {
-                    {
-                        let mut self_lock = loop_runner_mut.lock().await;
-                        let receiver = &mut self_lock.receiver;
-                        // Shut the server down if we close the channel
-                        if let Err(err) = receiver.try_recv() {
-                            if err == tokio::sync::mpsc::error::TryRecvError::Closed {
-                                break;
-                            }
+            loop {
+                {
+                    let mut self_lock = loop_runner_mut.lock().await;
+                    let receiver = &mut self_lock.receiver;
+                    // Shut the server down if we close the channel
+                    if let Err(err) = receiver.try_recv() {
+                        if err == tokio::sync::mpsc::error::TryRecvError::Closed {
+                            break;
                         }
                     }
-                    // Listen for incoming clients
-                    if let Ok((socket, address)) = listener.accept().await {
-                        let self_join_arc = loop_runner_mut.clone();
-                        let connections = connections.clone();
-                        let runtime_arc = runtime_server_loop.clone();
-                        let join = async move {
-                            ServerRunner::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
-                        };
-                        runtime_server_loop.spawn(join);
-                    }
                 }
-            };
-            // Async block to receive packets from the ServerRunner
-            let packet_listen_loop = async move {
-                let mut recv = packet_receive;
-                let mut pls = packet_listeners;
-                loop {
-                    MinecraftServer::receive_packet(&mut pls, &mut recv).await;
+                // Listen for incoming clients
+                if let Ok((socket, address)) = listener.accept().await {
+                    let self_join_arc = loop_runner_mut.clone();
+                    let connections = connections.clone();
+                    let runtime_arc = runtime_server_loop.clone();
+                    let join = async move {
+                        ServerRunner::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
+                    };
+                    runtime_server_loop.spawn(join);
                 }
-            };
-
-            // Run the main server loop and packet listening loop in the same thread
-            // Since both loops spend most of their time blocked, this is better than spawning 2 threads
-            // They both will halt once the server dies
-            tokio::join!(main_server_loop, packet_listen_loop);
+            }
 
             // Set server to not running
             {
@@ -270,19 +242,9 @@ impl MinecraftServer {
         runner.get_connected_players().await
     }
 
-    /// Register a packet listener to intercept packets received by the server
-    pub async fn on_receive_packet(&self, cb: PacketListener) {
-        self.packet_listeners.lock().await.push(cb);
-    }
-
-    /// Attempts to receive a packet from the ServerRunner and calls the packet listeners
-    async fn receive_packet(packet_listeners: &mut Arc<Mutex<Vec<PacketListener>>>, recv: &mut mpsc::Receiver<Packet>) {
-        if let Some(packet) = recv.recv().await {
-            let pl_lock = packet_listeners.lock().await;
-            pl_lock.iter().for_each(|f| {
-                f(&packet);
-            })
-        }
+    /// Returns a BusReader that can listen for packets processed by the server
+    pub async fn add_packet_receiver(&self) -> broadcast::Receiver<Packet> {
+        self.runner.lock().await.packet_tx.subscribe()
     }
 }
 
@@ -628,9 +590,7 @@ impl ServerRunner {
         }
 
         // Send packet away
-        if let Some(sender) = &mut self.packet_send {
-            sender.send(packet).await.unwrap();
-        }
+        self.packet_tx.send(packet).unwrap();
     }
 
     async fn get_connected_players(&mut self) -> Vec<StatusPlayerSampleSpec> {

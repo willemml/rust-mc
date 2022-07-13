@@ -1,6 +1,6 @@
-use rust_mc::{self, MinecraftServer, MinecraftClient};
+use rust_mc::{MinecraftServer, MinecraftClient};
 use rust_mc::mojang::auth;
-use tokio;
+use tokio::{self, join};
 
 #[macro_use]
 extern crate log;
@@ -17,19 +17,36 @@ async fn main() {
     );
     let server_handle = server.start().await.unwrap();
 
-    server.on_receive_packet(|p| {
-        debug!("[Server List] Packet received: {:?}", p);
-    }).await;
+    let mut server_packet_receiver = server.add_packet_receiver().await;
 
+    
     let mut client = MinecraftClient::new(
         "127.0.0.1:25565".parse().unwrap(),
         auth::Profile::new("TestUser", "", true),
     );
     let (_handle, _txc) = client.connect().await.unwrap();
-    client.on_receive_packet(|p| {
-        debug!("[Client List] Packet received: {:?}", p);
-    }).await;
+    let mut client_packet_listener = client.add_packet_receiver().await;
     client.send_chat_message("Test message").await;
+    
+    // Listen to packets from the server
+    let on_server_packet_loop = async move {
+        loop {
+            if let Ok(p) = server_packet_receiver.recv().await {
+                info!("[Server List] Packet received: {:?}", p);   
+            };
+        }
+    };
+    // Listen to packets from the client
+    let on_client_packet_loop = async move {
+        loop {
+            if let Ok(p) = client_packet_listener.recv().await {
+                info!("[Client List] Packet received: {:?}", p);   
+            };
+        }
+    };
+    
+    // Run both listeners in the same thread concurrently
+    join!(on_server_packet_loop, on_client_packet_loop);
 
     server_handle.await.unwrap();
 }

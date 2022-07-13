@@ -6,10 +6,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::{sync::{
     mpsc::{self, error::TryRecvError, Receiver, Sender},
-    Mutex,
-}, runtime::Runtime, task::JoinHandle, join};
-
-use super::server::PacketListener;
+    Mutex, broadcast,
+}, runtime::Runtime, task::JoinHandle};
 
 /// Error text when the client is not connected to a server.
 const SERVER_NONE_ERROR: &str = "Not connected to server.";
@@ -24,7 +22,6 @@ pub struct MinecraftClient {
     runtime: Runtime,
     /// Running instance of the client
     runner: Arc<Mutex<ClientRunner>>,
-    packet_listeners: Arc<Mutex<Vec<PacketListener>>>,
 }
 
 struct ClientRunner {
@@ -34,7 +31,8 @@ struct ClientRunner {
     connected: bool,
     /// When the client is connected, this holds the actual connection to the server.
     server: Option<MinecraftConnection>,
-    packet_send: Option<mpsc::Sender<Packet>>,
+    /// Bus for sending packets to any attached receivers
+    packet_tx: broadcast::Sender<Packet>,
 }
 
 impl MinecraftClient {
@@ -58,19 +56,20 @@ impl MinecraftClient {
     /// );
     /// ```
     pub fn new(address: SocketAddr, profile: crate::auth::Profile) -> MinecraftClient {
+        let (packet_tx, _) = broadcast::channel(16);
+
         let runner = Arc::new(Mutex::new(
             ClientRunner {
                 profile,
                 server: None,
                 connected: false,
-                packet_send: None,
+                packet_tx,
             }
         ));
         Self {
             address,
             runtime: Runtime::new().unwrap(),
             runner,
-            packet_listeners: Arc::new(Mutex::new(vec![])),
         }
     }
 
@@ -98,7 +97,8 @@ impl MinecraftClient {
     pub async fn connect(&mut self) -> Result<(JoinHandle<()>, Sender<()>)> {
         let runner_mut = self.runner.clone();
 
-        let fut = async {
+        // Start the TCP connection and wait for completion
+        {
             let mut runner = runner_mut.lock().await;
             // Authenticate profile
             let auth = runner.profile.authenticate().await;
@@ -122,37 +122,17 @@ impl MinecraftClient {
                 Some(profile),
             ).await?;
             // Do the login procedure
-            runner.login().await
-        };
-        // Start the TCP connection and wait for completion
-        join!(fut).0?;
+            runner.login().await?;
+        }
 
         // Create channels for communicating to the client
         let (tx, rx) = mpsc::channel(20);
 
-        let (send_packet, receive_packet) = mpsc::channel(1024);
-        {
-            self.runner.lock().await.packet_send = Some(send_packet);
-        }
-
-        let packet_listeners = self.packet_listeners.clone();
         let loop_runner_mut = self.runner.clone();
-
-        let main_client_loop = async move {
-            ClientRunner::start_loop(loop_runner_mut, rx).await;
-        };
-        let packet_listen_loop = async move {
-            let mut recv = receive_packet;
-            let mut pls = packet_listeners;
-            loop {
-                MinecraftClient::receive_packet(&mut pls, &mut recv).await;
-            }
-        };
 
         // Start the client loop in a new thread
         let handle = self.runtime.spawn(async move {
-            // Use a single thread to process receiving packets and listening here for packets
-            join!(main_client_loop, packet_listen_loop);
+            ClientRunner::start_loop(loop_runner_mut, rx).await;
         });
         
         Ok((handle, tx))
@@ -188,19 +168,9 @@ impl MinecraftClient {
         runner.send_chat_message(msg).await.unwrap();
     }
 
-    /// Register a packet listener to intercept packets received by the server
-    pub async fn on_receive_packet(&self, cb: PacketListener) {
-        self.packet_listeners.lock().await.push(cb);
-    }
-
-    /// Attempts to receive a packet from the ClientRunner and calls the packet listeners
-    async fn receive_packet(packet_listeners: &mut Arc<Mutex<Vec<PacketListener>>>, recv: &mut mpsc::Receiver<Packet>) {
-        if let Some(packet) = recv.recv().await {
-            let pl_lock = packet_listeners.lock().await;
-            pl_lock.iter().for_each(|f| {
-                f(&packet);
-            })
-        }
+    /// Returns a BusReader that can listen for packets processed by the client
+    pub async fn add_packet_receiver(&self) -> broadcast::Receiver<Packet> {
+        self.runner.lock().await.packet_tx.subscribe()
     }
 }
 
@@ -410,8 +380,6 @@ impl ClientRunner {
             _ => {}
         };
 
-        if let Some(sender) = &mut self.packet_send {
-            sender.send(packet).await.unwrap();
-        }
+        self.packet_tx.send(packet).unwrap();
     }
 }
