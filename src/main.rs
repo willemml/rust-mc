@@ -1,16 +1,14 @@
-use futures::executor::block_on;
 use rust_mc::{self, MinecraftServer, MinecraftClient};
 use rust_mc::mojang::auth;
+use tokio;
 
 #[macro_use]
 extern crate log;
 
-fn main() {
-    rust_mc::init();
-    block_on(async_main());
-}
+#[tokio::main]
+async fn main() {
+    env_logger::init();
 
-async fn async_main() {
     let (server, _tx) = MinecraftServer::new(
         "127.0.0.1:25565",
         "Rust test MC server",

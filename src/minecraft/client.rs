@@ -124,8 +124,8 @@ impl MinecraftClient {
             // Do the login procedure
             runner.login().await
         };
-        // Start the TCP connection in the tokio runtime. Check for errors
-        self.runtime.handle().block_on(fut)?;
+        // Start the TCP connection and wait for completion
+        join!(fut).0?;
 
         // Create channels for communicating to the client
         let (tx, rx) = mpsc::channel(20);
