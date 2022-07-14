@@ -1,15 +1,17 @@
 use std::{
     collections::{HashMap, HashSet},
     convert::TryInto,
-    sync::Arc,
+    sync::Arc, net::SocketAddr,
 };
 
-use tokio::sync::{mpsc::Receiver, Mutex, MutexGuard};
+use mcproto_rs::status::StatusPlayerSampleSpec;
+
+use tokio::{sync::{mpsc, Mutex, MutexGuard, broadcast}, net::TcpStream, task::JoinHandle, runtime::Handle};
 use tokio::{net::TcpListener, runtime::Runtime};
 
 use super::{connection::MinecraftConnection, proto, status::ServerStatus, types::Player, Packet};
 use anyhow::Result;
-use mcproto_rs::{types::Chat, uuid::UUID4, nbt::{Tag, NamedTag}};
+use mcproto_rs::{types::Chat, uuid::UUID4};
 use proto::ChatPosition;
 
 use openssl::rsa::{Rsa, Padding};
@@ -18,11 +20,18 @@ type NameUUID = (String, UUID4);
 type ConnectedPlayers = Arc<Mutex<HashMap<Arc<NameUUID>, Arc<Mutex<ServerClient>>>>>;
 
 /// Represents a Minecraft server.
-pub struct Server {
-    /// Clients that have connected.
-    players: ConnectedPlayers,
+pub struct MinecraftServer {
     /// Address to bind the listener to.
     bind_address: String,
+    /// Tokio runtime. Required for creating threads and having compatibility with mctokio crate
+    runtime: Runtime,
+    /// MC Runner
+    runner: Arc<Mutex<ServerRunner>>,
+}
+
+struct ServerRunner {
+    /// Clients that have connected.
+    players: ConnectedPlayers,
     /// Whether or not to make sure players have authenticated with Mojang, also enables packet encryption.
     online: bool,
     /// The server's status.
@@ -31,9 +40,15 @@ pub struct Server {
     used_entity_ids: HashSet<i32>,
     /// Whether or not players should be banned on death
     hardcore: bool,
+    /// Receiving channel for server communication
+    receiver: mpsc::Receiver<()>,
+    /// Whether the server is running
+    running: bool,
+    /// Broadcast sending packets to any attached receivers
+    packet_tx: broadcast::Sender<Packet>,
 }
 
-impl Server {
+impl MinecraftServer {
     /// Create a new server that binds to an address, does not launch/start the server.
     ///
     /// # Arguments
@@ -44,11 +59,21 @@ impl Server {
     /// # Examples
     ///
     /// ```rust
-    /// use rust_mc::minecraft::server::Server;
+    /// use rust_mc::minecraft::server::MinecraftServer;
     ///
-    /// let server = Server::new("127.0.0.1:25565", false);
+    /// let server = MinecraftServer::new(
+    ///     "127.0.0.1:25565",
+    ///     "Rust MC Server",
+    ///     5,
+    ///     false,
+    /// );
     /// ```
-    pub fn new(bind_address: String, description: String, max_players: i32, online: bool) -> Self {
+    pub fn new(
+        bind_address: &str,
+        description: &str,
+        max_players: i32,
+        online: bool
+    ) -> (Self, mpsc::Sender<()>) {
         use mcproto_rs::status::{StatusPlayersSpec, StatusVersionSpec};
         let status = ServerStatus {
             description: Chat::from_text(&description),
@@ -63,14 +88,35 @@ impl Server {
             },
             favicon: None,
         };
-        Server {
-            players: Arc::new(Mutex::new(HashMap::new())),
-            bind_address,
-            status,
-            online,
-            used_entity_ids: HashSet::new(),
-            hardcore: false
-        }
+
+        let runtime = Runtime::new().unwrap();
+        
+        // Create channel to allow for server shutdown in another thread
+        let (tx, rx) = mpsc::channel(20);
+
+        let (packet_tx, _) = broadcast::channel(16);
+
+        let runner = Arc::new(Mutex::new(
+            ServerRunner {
+                players: Arc::new(Mutex::new(HashMap::new())),
+                status,
+                online,
+                used_entity_ids: HashSet::new(),
+                hardcore: false,
+                receiver: rx,
+                running: false,
+                packet_tx,
+            }
+        ));
+
+        (
+            MinecraftServer {
+                bind_address: bind_address.to_string(),
+                runtime,
+                runner,
+            },
+            tx,
+        )
     }
 
     /// Starts listening for tcp connections on `self.bind_address`.
@@ -85,186 +131,252 @@ impl Server {
     /// # Examples
     ///
     /// ```rust
-    /// use rust_mc::minecraft::server::Server;
-    /// use std::sync::Arc;
-    /// use tokio::{
-    ///     runtime::Runtime,
-    ///     sync::{mpsc, Mutex}
-    /// };
+    /// use rust_mc::minecraft::server::MinecraftServer;
+    /// use futures::executor::block_on;
     ///
-    /// let server = Arc::new(Mutex::new(Server::new("127.0.0.1:25565", false)));
-    /// let (tx, rx) = mpsc::channel(20);
-    /// let runtime = Arc::new(Mutex::new(Runtime::new().unwrap()));
+    /// let (server, _tx) = MinecraftServer::new(
+    ///     "127.0.0.1:25565",
+    ///     "Rust MC Server",
+    ///     5,
+    ///     false,
+    /// );
     ///
-    /// Server::start(server, rx, runtime); // Start the server.
-    ///
-    /// std::thread::delay(std::time::Duration::from_millis(1000));
-    /// tx.try_lock().send(()); // Stop the server after 1000ms by sending something.
+    /// block_on(server.start()).unwrap(); // Start the server.
     /// ```
-    pub async fn start(
-        self_mutex: Arc<Mutex<Self>>,
-        mut receiver: Receiver<()>,
-        runtime: Arc<Mutex<Runtime>>,
-    ) -> Result<()> {
-        let mut listener: TcpListener;
-        let connections: ConnectedPlayers;
-        {
-            let self_lock = self_mutex.lock().await;
-            let bind = TcpListener::bind(self_lock.bind_address.clone()).await;
-            if let Ok(bind) = bind {
-                listener = bind;
-                connections = self_lock.players.clone();
-            } else {
-                println!("{}", bind.err().unwrap());
-                return Err(anyhow::anyhow!(
-                    "Failed to bind to {}",
-                    self_lock.bind_address.clone()
-                ));
-            }
-        }
-        loop {
-            if let Err(err) = receiver.try_recv() {
-                if err == tokio::sync::mpsc::error::TryRecvError::Closed {
-                    break;
+    pub async fn start(&self) -> Result<JoinHandle<()>> {
+        let runner_mut = self.runner.clone();
+
+        let runtime_server_loop = self.runtime.handle().clone();
+
+        let loop_runner_mut = runner_mut.clone();
+
+        // Set up a channel to communicate error or success
+        let (mut tx, mut rx) = mpsc::channel(32);
+
+        let bind_address = self.bind_address.clone();
+
+        // In a new thread, loop while the server is running
+        let server_loop = async move {
+            let mut listener: TcpListener;
+            let connections: ConnectedPlayers;
+            {
+                // Bind the socket
+                let self_lock = runner_mut.lock().await;
+                let bind = TcpListener::bind(bind_address.clone()).await;
+                if let Ok(bind) = bind {
+                    listener = bind;
+                    connections = self_lock.players.clone();
+                    tx.send(Ok(())).await.unwrap();
+                } else {
+                    error!("{}", bind.err().unwrap());
+                    tx.send(Err(anyhow::anyhow!(
+                        "Failed to bind to {}",
+                        bind_address.clone()
+                    ))).await.unwrap();
+                    return;
                 }
+            }
+            println!("[Server] Started server on {bind_address}");
+            // Set server to running
+            {
+                let mut self_lock = loop_runner_mut.lock().await;
+                self_lock.running = true;
+            }
+            // Main server loop that listens for incoming clients
+            loop {
+                {
+                    let mut self_lock = loop_runner_mut.lock().await;
+                    let receiver = &mut self_lock.receiver;
+                    // Shut the server down if we close the channel
+                    if let Err(err) = receiver.try_recv() {
+                        if err == tokio::sync::mpsc::error::TryRecvError::Closed {
+                            break;
+                        }
+                    }
+                }
+                // Listen for incoming clients
                 if let Ok((socket, address)) = listener.accept().await {
-                    let self_join_arc = self_mutex.clone();
+                    let self_join_arc = loop_runner_mut.clone();
                     let connections = connections.clone();
-                    let runtime_arc = runtime.clone();
+                    let runtime_arc = runtime_server_loop.clone();
                     let join = async move {
-                        let mut client = MinecraftConnection::from_tcp_stream(socket);
-                        let handshake = client.handshake(None, None).await;
-                        if let Ok(result) = handshake {
-                            println!(
-                                "{} handshake with {} successful.",
-                                result.name(),
-                                address.to_string()
-                            );
-                            if result == mcproto_rs::protocol::State::Login {
-                                let login;
-                                {
-                                    let mut self_lock = self_join_arc.lock().await;
-                                    if connections.clone().lock().await.len()
-                                        >= self_lock.status.players.max.try_into().unwrap()
-                                    {
-                                        let _kick = Self::login_kick(
-                                            client,
-                                            Chat::from_text(
-                                                "Server is full, wait for another player to leave.",
-                                            ),
-                                        )
-                                        .await;
-                                        return;
-                                    }
-                                    login = self_lock.handle_login(&mut client, 256).await;
-                                }
-                                if let Ok(login) = login {
-                                    let mut entity_id = i32::MIN;
-                                    {
-                                        let mut self_lock = self_join_arc.lock().await;
-                                        while self_lock.used_entity_ids.contains(&entity_id) {
-                                            entity_id = entity_id + 1;
-                                        }
-                                        self_lock.used_entity_ids.insert(entity_id);
-                                    }
-                                    let server_client = Arc::new(Mutex::new(ServerClient {
-                                        name: login.0.clone(),
-                                        uuid: login.1.clone(),
-                                        entity_id,
-                                        player: Player::new(
-                                            login.0.clone(),
-                                            login.1.clone(),
-                                            entity_id,
-                                        ),
-                                        connection: client,
-                                        view_distance: 10
-                                    }));
-                                    {
-                                        for player in connections.lock().await.keys() {
-                                            if player.0 == login.0 || player.1 == login.1 {
-                                                let _kick = server_client.lock().await.kick(Chat::from_text("Someone with the same name or UUID as you is already connected.")).await;
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    let server_client_arc = server_client.clone();
-                                    let self_loop_arc = self_join_arc.clone();
-                                    let packet_loop = async move {
-                                        let client_arc = server_client_arc.clone();
-                                        let server_arc = self_loop_arc.clone();
-                                        // Loop for processing player packets
-                                        loop {
-                                            let packet_read: Result<Option<super::Packet>>;
-                                            {
-                                                packet_read = client_arc
-                                                    .lock()
-                                                    .await
-                                                    .connection
-                                                    .read_next_packet()
-                                                    .await;
-                                            }
-                                            if let Ok(packet_ok) = packet_read {
-                                                if let Some(packet) = packet_ok {
-                                                    server_arc
-                                                        .lock()
-                                                        .await
-                                                        .handle_packet(
-                                                            packet,
-                                                            server_client_arc.clone().lock().await,
-                                                        )
-                                                        .await;
-                                                }
-                                            };
-                                        }
-                                    };
-                                    // Send JoinGame packet to player
-                                    {
-                                        let self_lock = self_join_arc.lock().await;
-                                        if let Err(e) = server_client.lock().await.join(self_lock.hardcore, self_lock.status.players.max).await {
-                                            eprintln!("{:?}", e);
-                                            return;
-                                        }
-                                    }
-                                    runtime_arc.lock().await.spawn(packet_loop);
-                                    connections
+                        ServerRunner::handle_client_connect(self_join_arc, runtime_arc, socket, address, connections).await;
+                    };
+                    runtime_server_loop.spawn(join);
+                }
+            }
+
+            // Set server to not running
+            {
+                let mut self_lock = loop_runner_mut.lock().await;
+                self_lock.running = false;
+            }
+        };
+
+        // Spawn server thead
+        let handle = self.runtime.handle().spawn(server_loop);
+        let err = rx.recv().await;
+        match err {
+            Some(e) => {
+                if let Err(e) = e {
+                    Err(e)
+                } else {
+                    Ok(handle)
+                }
+            },
+            None => Err(anyhow::anyhow!(
+                "Unexpected channel shutdown"
+            ))
+        }
+    }
+
+    pub async fn stop(&mut self) {
+        let mut runner = self.runner.lock().await;
+        if runner.running {
+            runner.receiver.close();
+        }
+    }
+
+    pub async fn get_connected_players(&self) -> Vec<StatusPlayerSampleSpec> {
+        let mut runner = self.runner.lock().await;
+        runner.get_connected_players().await
+    }
+
+    /// Returns a BusReader that can listen for packets processed by the server
+    pub async fn add_packet_receiver(&self) -> broadcast::Receiver<Packet> {
+        self.runner.lock().await.packet_tx.subscribe()
+    }
+}
+
+impl ServerRunner {
+    async fn handle_client_connect(self_join_arc: Arc<Mutex<ServerRunner>>, runtime_arc: Handle, socket: TcpStream, address: SocketAddr, connections: ConnectedPlayers) {
+        let mut client = MinecraftConnection::from_tcp_stream(socket);
+        let handshake = client.handshake(None, None).await;
+        if let Ok(result) = handshake {
+            info!(
+                "{} handshake with {} successful.",
+                result.name(),
+                address.to_string()
+            );
+            if result == mcproto_rs::protocol::State::Login {
+                let login;
+                {
+                    let mut self_lock = self_join_arc.lock().await;
+                    if connections.clone().lock().await.len()
+                        >= self_lock.status.players.max.try_into().unwrap()
+                    {
+                        let _kick = Self::login_kick(
+                            client,
+                            Chat::from_text(
+                                "Server is full, wait for another player to leave.",
+                            ),
+                        )
+                        .await;
+                        return;
+                    }
+                    login = self_lock.handle_login(&mut client, 256).await;
+                }
+                if let Ok(login) = login {
+                    let mut entity_id = i32::MIN;
+                    {
+                        let mut self_lock = self_join_arc.lock().await;
+                        while self_lock.used_entity_ids.contains(&entity_id) {
+                            entity_id = entity_id + 1;
+                        }
+                        self_lock.used_entity_ids.insert(entity_id);
+                    }
+                    let server_client = Arc::new(Mutex::new(ServerClient {
+                        name: login.0.clone(),
+                        uuid: login.1.clone(),
+                        entity_id,
+                        player: Player::new(
+                            login.0.clone(),
+                            login.1.clone(),
+                            entity_id,
+                        ),
+                        connection: client,
+                        view_distance: 10
+                    }));
+                    {
+                        for player in connections.lock().await.keys() {
+                            if player.0 == login.0 || player.1 == login.1 {
+                                let _kick = server_client.lock().await.kick(Chat::from_text("Someone with the same name or UUID as you is already connected.")).await;
+                                return;
+                            }
+                        }
+                    }
+                    let server_client_arc = server_client.clone();
+                    let self_loop_arc = self_join_arc.clone();
+                    let packet_loop = async move {
+                        let client_arc = server_client_arc.clone();
+                        let server_arc = self_loop_arc.clone();
+                        // Loop for processing player packets
+                        loop {
+                            let packet_read: Result<Option<super::Packet>>;
+                            {
+                                packet_read = client_arc
+                                    .lock()
+                                    .await
+                                    .connection
+                                    .read_next_packet()
+                                    .await;
+                            }
+                            if let Ok(packet_ok) = packet_read {
+                                if let Some(packet) = packet_ok {
+                                    server_arc
                                         .lock()
                                         .await
-                                        .insert(Arc::new((login.0, login.1)), server_client);
-                                    println!("{} successfully logged in.", address.to_string());
-                                } else {
-                                    println!(
-                                        "{} failed to log in: {}",
-                                        address.to_string(),
-                                        login.err().unwrap()
-                                    )
+                                        .handle_packet(
+                                            packet,
+                                            server_client_arc.clone().lock().await,
+                                        )
+                                        .await;
                                 }
-                            } else {
-                                let status: Result<()>;
-                                {
-                                    status = self_join_arc.lock().await.handle_status(client).await;
-                                }
-                                if let Ok(_) = status {
-                                    println!(
-                                        "{} successfully got server status.",
-                                        address.to_string()
-                                    )
-                                } else {
-                                    println!("{} failed to get server status.", address.to_string())
-                                }
-                            }
-                        } else {
-                            println!(
-                                "Handshake with {} failed: {}",
-                                address.to_string(),
-                                handshake.err().unwrap()
-                            )
+                            };
                         }
                     };
-                    runtime.lock().await.spawn(join);
+                    // Send JoinGame packet to player
+                    {
+                        let self_lock = self_join_arc.lock().await;
+                        if let Err(e) = server_client.lock().await.join(self_lock.hardcore, self_lock.status.players.max).await {
+                            error!("{:?}", e);
+                            return;
+                        }
+                    }
+                    runtime_arc.spawn(packet_loop);
+                    connections
+                        .lock()
+                        .await
+                        .insert(Arc::new((login.0, login.1)), server_client);
+                    println!("[Server] {} successfully logged in.", address.to_string());
+                } else {
+                    error!(
+                        "{} failed to log in: {}",
+                        address.to_string(),
+                        login.err().unwrap()
+                    )
+                }
+            } else {
+                let status: Result<()>;
+                {
+                    status = self_join_arc.lock().await.handle_status(client).await;
+                }
+                if let Ok(_) = status {
+                    info!(
+                        "{} successfully got server status.",
+                        address.to_string()
+                    )
+                } else {
+                    info!("{} failed to get server status.", address.to_string())
                 }
             }
+        } else {
+            info!(
+                "Handshake with {} failed: {}",
+                address.to_string(),
+                handshake.err().unwrap()
+            )
         }
-        return Ok(());
     }
 
     /// Handle client login.
@@ -342,7 +454,7 @@ impl Server {
                             ));
                         }
                     } else {
-                        println!("{:?}", response);
+                        debug!("{:?}", response);
                         if let Some(error) = response.err() {
                             return Err(error);
                         } else {
@@ -382,7 +494,6 @@ impl Server {
     /// Handle status requests by a client.
     async fn handle_status(&mut self, mut client: MinecraftConnection) -> anyhow::Result<()> {
         use super::Packet::{StatusPing, StatusPong, StatusRequest};
-        use mcproto_rs::status::StatusPlayerSampleSpec;
         use proto::StatusPongSpec;
         let second = &mut client.read_next_packet().await;
         if let Ok(second) = second {
@@ -434,7 +545,7 @@ impl Server {
     ///
     /// * `connection` Connection of the player to kick.
     /// * `message` Message to send the player (reason).
-    pub async fn login_kick(mut connection: MinecraftConnection, message: Chat) -> Result<()> {
+    async fn login_kick(mut connection: MinecraftConnection, message: Chat) -> Result<()> {
         use proto::LoginDisconnectSpec;
         use Packet::LoginDisconnect;
         let spec = LoginDisconnectSpec { message };
@@ -447,23 +558,29 @@ impl Server {
     ///
     /// * `message` Chat message to send.
     #[allow(unused_must_use)]
-    pub async fn broadcast_chat(&mut self, message: Chat) {
+    async fn broadcast_chat(&mut self, message: Chat) {
         for player in self.players.clone().lock().await.values() {
             player.clone().lock().await.send_message(
                 message.clone(),
                 ChatPosition::ChatBox,
                 None,
-            );
+            ).await;
         }
     }
 
     /// Handle packets sent by connected clients.
     async fn handle_packet(&mut self, packet: Packet, sender: MutexGuard<'_, ServerClient>) {
-        println!("Received packet {:?}", packet);
-        match packet {
+        debug!("[Server] Received a packet {:?}", packet);
+
+        match &packet {
             Packet::PlayClientChatMessage(body) => {
+                // Create chat message
+                let chat_message = &("<".to_owned() + sender.name.as_str() + "> " + body.message.as_str());
+                // Release the lock on the ServerClient since broadcast_chat needs the lock
+                drop(sender);
+                // Broadcast the message to the whole server
                 self.broadcast_chat(Chat::from_traditional(
-                    &("<".to_owned() + sender.name.as_str() + "> " + body.message.as_str()),
+                    chat_message,
                     true,
                 ))
                 .await;
@@ -471,11 +588,23 @@ impl Server {
             _ => {
             }
         }
+
+        // Send packet away
+        self.packet_tx.send(packet).unwrap();
+    }
+
+    async fn get_connected_players(&mut self) -> Vec<StatusPlayerSampleSpec> {
+        let connected_players = self.players.lock().await;
+        connected_players.keys()
+            .map(|player| StatusPlayerSampleSpec {
+                id: player.1,
+                name: player.0.clone(),
+            })
+            .collect()
     }
 }
 
 /// Represents a connected client/player.
-#[allow(dead_code)]
 struct ServerClient {
     name: String,
     uuid: UUID4,
@@ -540,7 +669,7 @@ impl ServerClient {
             is_debug: false,
             reduced_debug_info: true,
         };
-        println!("Sent join packet");
+        debug!("[Server] Sent join packet");
         self.connection.write_packet(Packet::PlayJoinGame(spec)).await
     }
 }

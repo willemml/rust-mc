@@ -1,112 +1,52 @@
-#![feature(array_chunks)]
-// Should be disabled when player inventory saving and loading is implemented
+use rust_mc::{MinecraftServer, MinecraftClient};
+use rust_mc::mojang::auth;
+use tokio::{self, join};
 
-/// Minecraft implementations.
-pub mod minecraft;
-/// Mojang API implementation.
-pub mod mojang;
-// Utilities
+#[macro_use]
+extern crate log;
 
-pub use minecraft::{client::Client, server::Server, status::StatusChecker};
-pub use mojang::auth;
+#[tokio::main]
+async fn main() {
+    env_logger::init();
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use tokio::{
-    runtime::Runtime,
-    sync::{mpsc, Mutex},
-    task::JoinHandle,
-};
+    let (server, _tx) = MinecraftServer::new(
+        "127.0.0.1:25565",
+        "Rust test MC server",
+        5,
+        false,
+    );
+    let server_handle = server.start().await.unwrap();
 
-static USE_TEST_CLIENT: bool = false;
+    let mut server_packet_receiver = server.add_packet_receiver().await;
 
-/// Main, currently just used to create runtimes start `async_main`.
-fn main() {
-    Runtime::new()
-        .unwrap()
-        .block_on(async_main(Arc::new(Mutex::new(Runtime::new().unwrap()))));
-}
-
-/// Async main, used for launching and testing client and server.
-#[allow(unused_must_use)]
-async fn async_main(runtime: Arc<Mutex<Runtime>>) {
-    let server = start_server(
-        "127.0.0.1:25565".to_string(),
-        "Rust MC server testing.".to_string(),
-        true,
-        runtime.clone(),
-    )
-    .await;
-
-    if USE_TEST_CLIENT {
-        let client = start_client(Ipv4Addr::LOCALHOST, 25565, "rust_mc", runtime.clone()).await;
-        if let Ok((_, client, _)) = client {
-            println!("Successfully connected to localhost:25565");
-            let mut buffer = String::new();
-            let stdin = std::io::stdin();
-            loop {
-                if let Ok(_) = stdin.read_line(&mut buffer) {
-                    if let Err(_) = client.lock().await.send_chat_message(&buffer).await {
-                        println!("Failed to send message...")
-                    }
-                    buffer.clear();
-                }
-            }
-        } else {
-            println!("Client failed to connect: {}", client.err().unwrap())
+    
+    let mut client = MinecraftClient::new(
+        "127.0.0.1:25565".parse().unwrap(),
+        auth::Profile::new("TestUser", "", true),
+    );
+    let (_handle, _txc) = client.connect().await.unwrap();
+    let mut client_packet_listener = client.add_packet_receiver().await;
+    client.send_chat_message("Test message").await;
+    
+    // Listen to packets from the server
+    let on_server_packet_loop = async move {
+        loop {
+            if let Ok(p) = server_packet_receiver.recv().await {
+                info!("[Server List] Packet received: {:?}", p);   
+            };
         }
-    }
-    server.0.await;
-}
+    };
+    // Listen to packets from the client
+    let on_client_packet_loop = async move {
+        loop {
+            if let Ok(p) = client_packet_listener.recv().await {
+                info!("[Client List] Packet received: {:?}", p);   
+            };
+        }
+    };
+    
+    // Run both listeners in the same thread concurrently
+    join!(on_server_packet_loop, on_client_packet_loop);
 
-/// Starts a server, mostly for testing.
-async fn start_server(
-    address: String,
-    description: String,
-    online: bool,
-    runtime: Arc<Mutex<Runtime>>,
-) -> (
-    JoinHandle<anyhow::Result<()>>,
-    Arc<Mutex<Server>>,
-    mpsc::Sender<()>,
-) {
-    let server = Arc::new(Mutex::new(Server::new(address, description, 5, online)));
-    let (tx, rx) = mpsc::channel(20);
-    (
-        runtime
-            .lock()
-            .await
-            .spawn(Server::start(server.clone(), rx, runtime.clone())),
-        server,
-        tx,
-    )
-}
-
-type ClientResult = anyhow::Result<(JoinHandle<()>, Arc<Mutex<Client>>, mpsc::Sender<()>)>;
-
-/// Starts a client, mostly for testing.
-async fn start_client(
-    ip: Ipv4Addr,
-    port: u16,
-    username: &str,
-    runtime: Arc<Mutex<Runtime>>,
-) -> ClientResult {
-    let client = Arc::new(Mutex::new(Client::new(
-        SocketAddr::new(IpAddr::V4(ip), port),
-        auth::Profile::new(username, "", true),
-    )));
-    let (tx, rx) = mpsc::channel(20);
-    let connect = client.lock().await.connect().await;
-    if let Ok(_) = connect {
-        Ok((
-            runtime
-                .lock()
-                .await
-                .spawn(Client::start_loop(client.clone(), rx)),
-            client,
-            tx,
-        ))
-    } else {
-        Err(connect.err().unwrap())
-    }
+    server_handle.await.unwrap();
 }
